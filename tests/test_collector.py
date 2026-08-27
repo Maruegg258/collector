@@ -21,6 +21,27 @@ def sample_trade(*, side: str = "B", tid: int = 123, time_ms: int = 1_700_000_00
     }
 
 
+class FakeLease:
+    instance_id = "current"
+
+    def __init__(self, *, own_heartbeat_ms: int, other_heartbeat_ms: int) -> None:
+        self.own_heartbeat_ms = own_heartbeat_ms
+        self.other_heartbeat_ms = other_heartbeat_ms
+        self.updates: list[dict] = []
+
+    def active_other_exists(self, *, now_ms: int | None = None) -> bool:
+        return False
+
+    def latest_other_heartbeat_ms(self) -> int:
+        return self.other_heartbeat_ms
+
+    def snapshot(self) -> dict:
+        return {"own_heartbeat_ms": self.own_heartbeat_ms}
+
+    def update(self, **kwargs) -> None:
+        self.updates.append(kwargs)
+
+
 def test_parse_buy_trade_has_positive_signed_notional(tmp_path):
     store = TradeStore(str(tmp_path / "test.sqlite3"))
     collector = HypeSpotCollector(store)
@@ -66,4 +87,39 @@ def test_non_trade_message_is_ignored(tmp_path):
     collector = HypeSpotCollector(store)
     assert collector.process_message({"channel": "subscriptionResponse", "data": {}}) == (0, 0)
     assert store.count() == 0
+    store.close()
+
+
+def test_initial_lease_handoff_can_anchor_to_predecessor(tmp_path):
+    store = TradeStore(str(tmp_path / "test.sqlite3"))
+    lease = FakeLease(own_heartbeat_ms=2_000, other_heartbeat_ms=1_000)
+    collector = HypeSpotCollector(store, lease=lease)
+
+    collector._prepare_lease_handoff(3_000)
+
+    assert collector._pending_gap_start_ms == 1_000
+    store.close()
+
+
+def test_reconnect_preserves_own_disconnect_anchor_instead_of_old_predecessor(tmp_path):
+    store = TradeStore(str(tmp_path / "test.sqlite3"))
+    old_predecessor_heartbeat = 1_000
+    own_recent_heartbeat = 10_000_000
+    lease = FakeLease(
+        own_heartbeat_ms=own_recent_heartbeat,
+        other_heartbeat_ms=old_predecessor_heartbeat,
+    )
+    collector = HypeSpotCollector(store, lease=lease)
+    collector.state.connected = True
+    collector.state.last_message_at_ms = own_recent_heartbeat
+
+    gap_start = collector._mark_unexpected_disconnect()
+    assert gap_start == own_recent_heartbeat
+    assert collector._pending_gap_start_ms == own_recent_heartbeat
+
+    collector.state.connected = True
+    collector._prepare_lease_handoff(own_recent_heartbeat + 2_000)
+
+    assert collector._pending_gap_start_ms == own_recent_heartbeat
+    assert collector._pending_gap_start_ms != old_predecessor_heartbeat
     store.close()
