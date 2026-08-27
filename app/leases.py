@@ -44,10 +44,17 @@ class CollectorLeaseCoordinator:
                     last_message_at_ms, stopped_at_ms
                 ) VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT(instance_id) DO UPDATE SET
-                    heartbeat_ms=EXCLUDED.heartbeat_ms,
-                    connected=EXCLUDED.connected,
-                    last_message_at_ms=COALESCE(EXCLUDED.last_message_at_ms, collector_leases.last_message_at_ms),
-                    stopped_at_ms=EXCLUDED.stopped_at_ms
+                    heartbeat_ms=GREATEST(collector_leases.heartbeat_ms, EXCLUDED.heartbeat_ms),
+                    connected=CASE
+                        WHEN collector_leases.stopped_at_ms IS NOT NULL THEN FALSE
+                        ELSE EXCLUDED.connected
+                    END,
+                    last_message_at_ms=CASE
+                        WHEN collector_leases.last_message_at_ms IS NULL THEN EXCLUDED.last_message_at_ms
+                        WHEN EXCLUDED.last_message_at_ms IS NULL THEN collector_leases.last_message_at_ms
+                        ELSE GREATEST(collector_leases.last_message_at_ms, EXCLUDED.last_message_at_ms)
+                    END,
+                    stopped_at_ms=COALESCE(collector_leases.stopped_at_ms, EXCLUDED.stopped_at_ms)
                 """,
                 (
                     self.instance_id,
@@ -69,6 +76,7 @@ class CollectorLeaseCoordinator:
                 SELECT 1 FROM collector_leases
                 WHERE instance_id <> %s
                   AND connected = TRUE
+                  AND stopped_at_ms IS NULL
                   AND heartbeat_ms >= %s
                 LIMIT 1
                 """,
@@ -91,12 +99,17 @@ class CollectorLeaseCoordinator:
             cur.execute(
                 """
                 SELECT COUNT(*) AS n FROM collector_leases
-                WHERE connected = TRUE AND heartbeat_ms >= %s
+                WHERE connected = TRUE
+                  AND stopped_at_ms IS NULL
+                  AND heartbeat_ms >= %s
                 """,
                 (now_ms - self.stale_after_ms,),
             )
             active = int(cur.fetchone()["n"])
-            cur.execute("SELECT heartbeat_ms, connected, last_message_at_ms FROM collector_leases WHERE instance_id=%s", (self.instance_id,))
+            cur.execute(
+                "SELECT heartbeat_ms, connected, last_message_at_ms, stopped_at_ms FROM collector_leases WHERE instance_id=%s",
+                (self.instance_id,),
+            )
             own = cur.fetchone()
         return {
             "instance_id": self.instance_id,
@@ -105,6 +118,7 @@ class CollectorLeaseCoordinator:
             "own_heartbeat_ms": None if own is None else int(own["heartbeat_ms"]),
             "own_connected": False if own is None else bool(own["connected"]),
             "own_last_message_at_ms": None if own is None or own["last_message_at_ms"] is None else int(own["last_message_at_ms"]),
+            "own_stopped_at_ms": None if own is None or own["stopped_at_ms"] is None else int(own["stopped_at_ms"]),
         }
 
     def close(self) -> None:
