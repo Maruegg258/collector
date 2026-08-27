@@ -85,6 +85,34 @@ class TradeStore:
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_gaps_coin_time ON coverage_gaps (coin, start_ms, end_ms)"
             )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS aggregate_buckets (
+                    coin TEXT NOT NULL,
+                    granularity TEXT NOT NULL CHECK (granularity IN ('4h', '1d')),
+                    start_ms INTEGER NOT NULL,
+                    end_ms INTEGER NOT NULL,
+                    trade_count INTEGER NOT NULL,
+                    buy_notional_usdc REAL NOT NULL,
+                    sell_notional_usdc REAL NOT NULL,
+                    net_delta_usdc REAL NOT NULL,
+                    base_delta_hype REAL NOT NULL,
+                    total_notional_usdc REAL NOT NULL,
+                    delta_ratio REAL,
+                    first_trade_time_ms INTEGER,
+                    last_trade_time_ms INTEGER,
+                    complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
+                    quality TEXT NOT NULL,
+                    unresolved_gap_count INTEGER NOT NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY (coin, granularity, start_ms)
+                )
+                """
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_aggregate_coin_time ON aggregate_buckets (coin, granularity, start_ms)"
+            )
             self.conn.commit()
 
     def insert_many(self, records: Iterable[TradeRecord]) -> tuple[int, int]:
@@ -185,6 +213,134 @@ class TradeStore:
             if row["last_trade_time_ms"] is None
             else int(row["last_trade_time_ms"]),
         }
+
+    def upsert_aggregate_bucket(
+        self,
+        coin: str,
+        granularity: str,
+        start_ms: int,
+        end_ms: int,
+        stats: dict,
+        *,
+        complete: bool,
+        quality: str,
+        unresolved_gap_count: int,
+    ) -> None:
+        now_ms = int(time.time() * 1000)
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO aggregate_buckets(
+                    coin, granularity, start_ms, end_ms, trade_count,
+                    buy_notional_usdc, sell_notional_usdc, net_delta_usdc,
+                    base_delta_hype, total_notional_usdc, delta_ratio,
+                    first_trade_time_ms, last_trade_time_ms, complete, quality,
+                    unresolved_gap_count, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(coin, granularity, start_ms) DO UPDATE SET
+                    end_ms = excluded.end_ms,
+                    trade_count = excluded.trade_count,
+                    buy_notional_usdc = excluded.buy_notional_usdc,
+                    sell_notional_usdc = excluded.sell_notional_usdc,
+                    net_delta_usdc = excluded.net_delta_usdc,
+                    base_delta_hype = excluded.base_delta_hype,
+                    total_notional_usdc = excluded.total_notional_usdc,
+                    delta_ratio = excluded.delta_ratio,
+                    first_trade_time_ms = excluded.first_trade_time_ms,
+                    last_trade_time_ms = excluded.last_trade_time_ms,
+                    complete = excluded.complete,
+                    quality = excluded.quality,
+                    unresolved_gap_count = excluded.unresolved_gap_count,
+                    updated_at_ms = excluded.updated_at_ms
+                """,
+                (
+                    coin,
+                    granularity,
+                    start_ms,
+                    end_ms,
+                    int(stats["trade_count"]),
+                    float(stats["buy_notional_usdc"]),
+                    float(stats["sell_notional_usdc"]),
+                    float(stats["net_delta_usdc"]),
+                    float(stats["base_delta_hype"]),
+                    float(stats["total_notional_usdc"]),
+                    stats["delta_ratio"],
+                    stats["first_trade_time_ms"],
+                    stats["last_trade_time_ms"],
+                    1 if complete else 0,
+                    quality,
+                    unresolved_gap_count,
+                    now_ms,
+                    now_ms,
+                ),
+            )
+            self.conn.commit()
+
+    def aggregate_bucket_count(
+        self, coin: str, granularity: str | None = None
+    ) -> int:
+        with self._lock:
+            if granularity is None:
+                row = self.conn.execute(
+                    "SELECT COUNT(*) AS n FROM aggregate_buckets WHERE coin = ?",
+                    (coin,),
+                ).fetchone()
+            else:
+                row = self.conn.execute(
+                    """
+                    SELECT COUNT(*) AS n FROM aggregate_buckets
+                    WHERE coin = ? AND granularity = ?
+                    """,
+                    (coin, granularity),
+                ).fetchone()
+        return int(row["n"])
+
+    def get_aggregate_bucket(
+        self, coin: str, granularity: str, start_ms: int
+    ) -> dict | None:
+        with self._lock:
+            row = self.conn.execute(
+                """
+                SELECT * FROM aggregate_buckets
+                WHERE coin = ? AND granularity = ? AND start_ms = ?
+                """,
+                (coin, granularity, start_ms),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def delete_trades_before(self, cutoff_ms: int, *, coin: str | None = None) -> int:
+        with self._lock:
+            before = self.conn.total_changes
+            if coin is None:
+                self.conn.execute("DELETE FROM trades WHERE time_ms < ?", (cutoff_ms,))
+            else:
+                self.conn.execute(
+                    "DELETE FROM trades WHERE coin = ? AND time_ms < ?",
+                    (coin, cutoff_ms),
+                )
+            self.conn.commit()
+            return self.conn.total_changes - before
+
+    def delete_gaps_before(self, cutoff_ms: int, *, coin: str | None = None) -> int:
+        with self._lock:
+            before = self.conn.total_changes
+            if coin is None:
+                self.conn.execute(
+                    "DELETE FROM coverage_gaps WHERE end_ms < ?", (cutoff_ms,)
+                )
+            else:
+                self.conn.execute(
+                    "DELETE FROM coverage_gaps WHERE coin = ? AND end_ms < ?",
+                    (coin, cutoff_ms),
+                )
+            self.conn.commit()
+            return self.conn.total_changes - before
+
+    def checkpoint_wal(self, *, truncate: bool = False) -> tuple[int, int, int]:
+        mode = "TRUNCATE" if truncate else "PASSIVE"
+        with self._lock:
+            row = self.conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
+        return int(row[0]), int(row[1]), int(row[2])
 
     def set_meta(self, key: str, value: str | int) -> None:
         with self._lock:
