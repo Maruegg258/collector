@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections import namedtuple
 
 from app.lifecycle import DAY_MS, FOUR_HOURS_MS, StorageLifecycle, StorageLifecycleConfig
-from app.storage import TradeRecord, TradeStore
+from app.storage import TradeRecord
+from app.storage_factory import SQLiteTradeStore as TradeStore
 
 
 def add_trade(
@@ -171,15 +172,23 @@ def test_disk_guardrail_levels(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         "app.lifecycle.shutil.disk_usage",
-        lambda _: DiskUsage(100, 65, 35),
+        lambda _: DiskUsage(100, 79, 21),
     )
-    assert lifecycle.run_once(now_ms=1_800_000_000_000)["status"] == "WARNING"
+    assert lifecycle.run_once(now_ms=1_800_000_000_000)["status"] == "NORMAL"
 
     monkeypatch.setattr(
         "app.lifecycle.shutil.disk_usage",
         lambda _: DiskUsage(100, 85, 15),
     )
-    report = lifecycle.run_once(now_ms=1_800_000_000_001)
+    assert lifecycle.run_once(now_ms=1_800_000_000_001)["status"] == "WARNING"
+
+    monkeypatch.setattr(
+        "app.lifecycle.shutil.disk_usage",
+        lambda _: DiskUsage(100, 96, 4),
+    )
+    report = lifecycle.run_once(now_ms=1_800_000_000_002)
     assert report["status"] == "CRITICAL"
+    assert report["warning_ratio"] == 0.80
+    assert report["critical_ratio"] == 0.95
     assert report["policy"]["critical_action"] == "ALERT_ONLY_KEEP_14D_RETENTION"
     store.close()
