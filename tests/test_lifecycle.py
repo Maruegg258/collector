@@ -40,6 +40,7 @@ def test_materializes_completed_4h_and_daily_buckets(tmp_path):
     day_start = ((now // DAY_MS) - 2) * DAY_MS
     store.set_meta("coverage_epoch_ms", min(four_start, day_start) - 1)
 
+    add_trade(store, t=day_start + 1_000, side="B", tid=3)
     add_trade(store, t=four_start + 1_000, side="B", sz=2, tid=1)
     add_trade(store, t=four_start + 2_000, side="A", sz=1, tid=2)
 
