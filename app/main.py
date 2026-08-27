@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from .analytics import build_spot_demand_snapshot
 from .collector import HypeSpotCollector
 from .lifecycle import StorageLifecycle, StorageLifecycleConfig
+from .migration import migrate_sqlite_snapshot_to_postgres
 from .storage_factory import create_store
 
 logging.basicConfig(
@@ -22,6 +23,10 @@ logger = logging.getLogger(__name__)
 DB_PATH = os.getenv("DB_PATH", "./data/hype_spot.sqlite3")
 DATABASE_URL = os.getenv("DATABASE_URL")
 STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "sqlite")
+MIGRATE_SQLITE_TO_POSTGRES_ON_START = (
+    os.getenv("MIGRATE_SQLITE_TO_POSTGRES_ON_START", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 HYPE_COIN = os.getenv("HYPE_COIN", "@107")
 HYPERLIQUID_WS_URL = os.getenv(
     "HYPERLIQUID_WS_URL", "wss://api.hyperliquid.xyz/ws"
@@ -60,6 +65,12 @@ lifecycle = StorageLifecycle(
 collector_task: asyncio.Task | None = None
 summary_task: asyncio.Task | None = None
 storage_task: asyncio.Task | None = None
+migration_task: asyncio.Task | None = None
+migration_state: dict = {
+    "enabled": MIGRATE_SQLITE_TO_POSTGRES_ON_START,
+    "status": "PENDING" if MIGRATE_SQLITE_TO_POSTGRES_ON_START else "DISABLED",
+    "verified": False,
+}
 
 
 async def periodic_summary() -> None:
@@ -75,7 +86,7 @@ async def periodic_summary() -> None:
             "collector_summary connected=%s quality=%s stored=%s "
             "last_trade_age_ms=%s coverage_4h=%.3f coverage_24h=%.3f "
             "coverage_3d=%.3f reconnects=%s recoveries=%s/%s unresolved_gaps=%s "
-            "backend=%s storage=%s disk_ratio=%s aggregate_4h=%s aggregate_1d=%s",
+            "backend=%s storage=%s disk_ratio=%s aggregate_4h=%s aggregate_1d=%s migration=%s",
             state["connected"],
             spot["data_quality"],
             spot["collector"]["stored_trades"],
@@ -92,6 +103,7 @@ async def periodic_summary() -> None:
             None if disk_ratio is None else round(float(disk_ratio), 4),
             storage.get("aggregate_4h_total"),
             storage.get("aggregate_1d_total"),
+            migration_state.get("status"),
         )
 
 
@@ -126,26 +138,67 @@ async def periodic_storage_maintenance() -> None:
         await asyncio.sleep(STORAGE_MAINTENANCE_INTERVAL_SECONDS)
 
 
+async def run_initial_migration() -> None:
+    if not MIGRATE_SQLITE_TO_POSTGRES_ON_START:
+        return
+    if STORAGE_BACKEND.strip().lower() != "sqlite":
+        migration_state.update(
+            status="SKIPPED",
+            reason="source_backend_is_not_sqlite",
+        )
+        return
+    if not DATABASE_URL:
+        migration_state.update(status="FAILED", reason="DATABASE_URL_missing")
+        logger.error("sqlite_to_postgres_migration failed reason=DATABASE_URL_missing")
+        return
+
+    migration_state.update(status="RUNNING", started_at=datetime.now(timezone.utc).isoformat())
+    try:
+        report = await asyncio.to_thread(
+            migrate_sqlite_snapshot_to_postgres,
+            db_path=DB_PATH,
+            database_url=DATABASE_URL,
+            coin=HYPE_COIN,
+        )
+        migration_state.clear()
+        migration_state.update(enabled=True, status="SUCCESS" if report.verified else "FAILED", **report.as_dict())
+        log = logger.info if report.verified else logger.error
+        log(
+            "sqlite_to_postgres_migration status=%s verified=%s cutoff_ms=%s source=%s target=%s inserted=%s duplicates=%s meta=%s gaps=%s aggregates=%s duration_ms=%s",
+            migration_state["status"],
+            report.verified,
+            report.cutoff_ms,
+            report.source_trade_count_at_cutoff,
+            report.target_trade_count_at_cutoff,
+            report.inserted_trades,
+            report.duplicate_trades,
+            report.meta_rows,
+            report.gap_rows,
+            report.aggregate_rows,
+            report.finished_at_ms - report.started_at_ms,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        migration_state.update(status="FAILED", reason=f"{type(exc).__name__}: {exc}")
+        logger.exception("sqlite_to_postgres_migration failed")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global collector_task, summary_task, storage_task
-    collector_task = asyncio.create_task(
-        collector.run(), name="hype-spot-collector"
-    )
-    summary_task = asyncio.create_task(
-        periodic_summary(), name="collector-summary"
-    )
-    storage_task = asyncio.create_task(
-        periodic_storage_maintenance(), name="storage-maintenance"
-    )
+    global collector_task, summary_task, storage_task, migration_task
+    collector_task = asyncio.create_task(collector.run(), name="hype-spot-collector")
+    summary_task = asyncio.create_task(periodic_summary(), name="collector-summary")
+    storage_task = asyncio.create_task(periodic_storage_maintenance(), name="storage-maintenance")
+    migration_task = asyncio.create_task(run_initial_migration(), name="sqlite-postgres-migration")
     try:
         yield
     finally:
         collector.stop()
-        for task in (storage_task, summary_task, collector_task):
+        for task in (migration_task, storage_task, summary_task, collector_task):
             if task:
                 task.cancel()
-        for task in (storage_task, summary_task, collector_task):
+        for task in (migration_task, storage_task, summary_task, collector_task):
             if task:
                 try:
                     await task
@@ -156,7 +209,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="HYPE Spot Collector",
-    version="0.5.0",
+    version="0.6.0",
     lifespan=lifespan,
 )
 
@@ -167,26 +220,25 @@ def health() -> dict:
     return {
         "status": "ok" if state["connected"] else "degraded",
         "service": "hype-spot-collector",
-        "version": "0.5.0",
+        "version": "0.6.0",
         "time": datetime.now(timezone.utc).isoformat(),
         "storage_backend": store.backend_name,
         "collector": state,
         "storage": lifecycle.snapshot(),
+        "migration": migration_state,
     }
 
 
 @app.get("/hype/spot-demand")
 def hype_spot_demand() -> dict:
-    return build_spot_demand_snapshot(
-        store,
-        collector.snapshot(),
-        coin=HYPE_COIN,
-    )
+    return build_spot_demand_snapshot(store, collector.snapshot(), coin=HYPE_COIN)
 
 
 @app.get("/storage/status")
 def storage_status() -> dict:
-    return {
-        "backend": store.backend_name,
-        **lifecycle.snapshot(),
-    }
+    return {"backend": store.backend_name, **lifecycle.snapshot()}
+
+
+@app.get("/migration/status")
+def migration_status() -> dict:
+    return dict(migration_state)
