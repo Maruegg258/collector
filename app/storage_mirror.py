@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Iterable
 
 from .storage import TradeRecord
@@ -11,11 +12,11 @@ logger = logging.getLogger(__name__)
 
 
 class MirroringTradeStore:
-    """Read from the primary store and best-effort mirror every mutation to target.
+    """Read from primary and best-effort mirror every mutation to target.
 
-    Primary write results are authoritative. Mirror failures are surfaced in mirror
-    state but never make the SQLite primary fail; this keeps the legacy collector
-    collecting while PostgreSQL is being proven for handoff.
+    Primary write results remain authoritative. Any mirror failure is sticky for the
+    lifetime of the process so handoff cannot be declared healthy after a later,
+    unrelated successful mirror write.
     """
 
     def __init__(self, primary: StorageBackend, mirror: StorageBackend) -> None:
@@ -30,12 +31,9 @@ class MirroringTradeStore:
         self._last_mirror_ok_ms: int | None = None
 
     def _record_ok(self) -> None:
-        import time
-
         with self._state_lock:
             self._mirror_writes += 1
             self._last_mirror_ok_ms = int(time.time() * 1000)
-            self._last_mirror_error = None
 
     def _record_failure(self, operation: str, exc: Exception) -> None:
         with self._state_lock:
@@ -52,7 +50,7 @@ class MirroringTradeStore:
                 "failures": self._mirror_failures,
                 "last_error": self._last_mirror_error,
                 "last_ok_ms": self._last_mirror_ok_ms,
-                "healthy": self._mirror_failures == 0 or self._last_mirror_error is None,
+                "healthy": self._mirror_failures == 0,
             }
 
     def insert_many(self, records: Iterable[TradeRecord]) -> tuple[int, int]:
@@ -79,24 +77,14 @@ class MirroringTradeStore:
 
     def upsert_aggregate_bucket(self, coin: str, granularity: str, start_ms: int, end_ms: int, stats: dict, *, complete: bool, quality: str, unresolved_gap_count: int) -> None:
         self.primary.upsert_aggregate_bucket(
-            coin,
-            granularity,
-            start_ms,
-            end_ms,
-            stats,
-            complete=complete,
-            quality=quality,
+            coin, granularity, start_ms, end_ms, stats,
+            complete=complete, quality=quality,
             unresolved_gap_count=unresolved_gap_count,
         )
         try:
             self.mirror.upsert_aggregate_bucket(
-                coin,
-                granularity,
-                start_ms,
-                end_ms,
-                stats,
-                complete=complete,
-                quality=quality,
+                coin, granularity, start_ms, end_ms, stats,
+                complete=complete, quality=quality,
                 unresolved_gap_count=unresolved_gap_count,
             )
             self._record_ok()
@@ -143,22 +131,14 @@ class MirroringTradeStore:
 
     def add_gap(self, coin: str, start_ms: int, end_ms: int, *, status: str, reason: str, recovery_earliest_ms: int | None = None, recovery_latest_ms: int | None = None, recovered_trade_count: int = 0) -> None:
         self.primary.add_gap(
-            coin,
-            start_ms,
-            end_ms,
-            status=status,
-            reason=reason,
+            coin, start_ms, end_ms, status=status, reason=reason,
             recovery_earliest_ms=recovery_earliest_ms,
             recovery_latest_ms=recovery_latest_ms,
             recovered_trade_count=recovered_trade_count,
         )
         try:
             self.mirror.add_gap(
-                coin,
-                start_ms,
-                end_ms,
-                status=status,
-                reason=reason,
+                coin, start_ms, end_ms, status=status, reason=reason,
                 recovery_earliest_ms=recovery_earliest_ms,
                 recovery_latest_ms=recovery_latest_ms,
                 recovered_trade_count=recovered_trade_count,
@@ -174,7 +154,11 @@ class MirroringTradeStore:
         return self.primary.unresolved_gap_count(coin)
 
     def ping(self) -> bool:
-        return self.primary.ping()
+        try:
+            self.primary.count()
+            return True
+        except Exception:
+            return False
 
     def close(self) -> None:
         try:
