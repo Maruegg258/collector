@@ -77,6 +77,18 @@ class HypeSpotCollector:
             self.store.set_meta("coverage_heartbeat_ms", now_ms)
             self._last_heartbeat_persist_ms = now_ms
 
+    def _mark_unexpected_disconnect(self) -> int:
+        """Use the last proven-live message as the conservative gap start."""
+        gap_start_ms = (
+            self.state.last_message_at_ms
+            or self.state.connected_at_ms
+            or int(time.time() * 1000)
+        )
+        self._pending_gap_start_ms = int(gap_start_ms)
+        self.store.set_meta("coverage_heartbeat_ms", int(gap_start_ms))
+        self._last_heartbeat_persist_ms = int(gap_start_ms)
+        return int(gap_start_ms)
+
     def process_message(self, message: dict[str, Any]) -> tuple[int, int]:
         now_ms = int(time.time() * 1000)
         self.state.messages_seen += 1
@@ -259,9 +271,14 @@ class HypeSpotCollector:
                 logger.warning("websocket disconnected: %s", self.state.last_error)
             finally:
                 if self.state.connected:
-                    now_ms = int(time.time() * 1000)
-                    self._persist_heartbeat(now_ms, force=True)
-                    self._pending_gap_start_ms = now_ms
+                    if self._stop.is_set():
+                        self._persist_heartbeat(int(time.time() * 1000), force=True)
+                    else:
+                        gap_start_ms = self._mark_unexpected_disconnect()
+                        logger.warning(
+                            "continuity_gap_opened start_ms=%s basis=last_healthy_message",
+                            gap_start_ms,
+                        )
                 self.state.connected = False
 
             if self._stop.is_set():
