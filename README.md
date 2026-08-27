@@ -28,17 +28,31 @@ The monitor evaluates completed Binance-aligned UTC 4H boundaries.
 
 Raw trades are retained for **12 hours by default** for current-bucket calculation, reconnect recovery and diagnostics. Completed 4H aggregates are retained indefinitely, so 24H/3D Protocol history does not depend on retaining every raw trade for days.
 
-## Data quality
+## Data quality — Protocol v1.1
+
+Engineering continuity facts and trading usability are separate.
+
+- Every unprovable interval remains `UNRESOLVED`; missing trades are never filled, guessed, or assumed to be zero.
+- `COMPLETE`: no unresolved continuity gap in the completed 4H bucket.
+- `MINOR_GAP`: quantitative continuity still meets the Protocol v1.1 conservative tolerance: each independent gap <= 5s, total unresolved duration <= 10s per completed 4H, and <= 2 independent gaps.
+- `MATERIAL_GAP`: any quantitative limit above is exceeded.
+- `MINOR_GAP` does **not** automatically disable FULL SPOT MODE.
+- `MATERIAL_GAP`, stale/disconnected official feed, or archive loss degrades Spot usability.
 
 `/hype/spot-demand` reports:
 
 - `data_quality`: `FULL`, `WARMING_UP`, or `DEGRADED`
 - `full_spot_mode_ready`
-- per-window coverage and unresolved gap counts
-- archive source (`materialized_4h`, `raw_fallback`, or `missing`)
+- `spot_integrity`
+- per-window `COMPLETE` / `MINOR_GAP` / `MATERIAL_GAP`, gap duration/count, coverage and archive source
+- `monitor_review.signal_robustness_required`
+- `monitor_review.material_event_override_required`
+- `monitor_review.repeated_minor_gap_review_required`
 - collector freshness and reconnect/recovery counters
 
-A missing or unprovable interval is never guessed. Gap recovery uses Hyperliquid official `recentTrades` with strict overlap proof and bounded retries. Unresolved gaps remain explicit.
+The Collector only classifies **quantitative continuity**. It does not invent severe-event context. When a `MINOR_GAP` exists, the HYPE Monitor must apply Protocol v1.1's Signal Robustness Rule and may override it to `MATERIAL_GAP` if severe market/protocol conditions or systematic continuity instability make the missing interval materially important.
+
+Gap recovery still uses Hyperliquid official `recentTrades` with strict overlap proof and bounded retries. An unresolved interval is never relabelled HEALED merely because it is small.
 
 ## Reliability
 
