@@ -133,6 +133,15 @@ class HypeSpotCollector:
         return payload
 
     async def _recover_gap(self, gap_start_ms: int, gap_end_ms: int) -> None:
+        if gap_end_ms <= gap_start_ms:
+            self.state.last_gap_status = "NO_GAP"
+            logger.info(
+                "gap_recovery status=NO_GAP start_ms=%s end_ms=%s reason=event_time_not_after_heartbeat",
+                gap_start_ms,
+                gap_end_ms,
+            )
+            return
+
         self.state.recovery_attempts += 1
         try:
             raw_trades = await asyncio.to_thread(self._fetch_recent_sync)
