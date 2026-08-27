@@ -20,11 +20,19 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.getenv("DB_PATH", "./data/hype_spot.sqlite3")
 HYPE_COIN = os.getenv("HYPE_COIN", "@107")
-HYPERLIQUID_WS_URL = os.getenv("HYPERLIQUID_WS_URL", "wss://api.hyperliquid.xyz/ws")
-SUMMARY_INTERVAL_SECONDS = max(30, int(os.getenv("SUMMARY_INTERVAL_SECONDS", "60")))
+HYPERLIQUID_WS_URL = os.getenv(
+    "HYPERLIQUID_WS_URL", "wss://api.hyperliquid.xyz/ws"
+)
+SUMMARY_INTERVAL_SECONDS = max(
+    30, int(os.getenv("SUMMARY_INTERVAL_SECONDS", "60"))
+)
 
 store = TradeStore(DB_PATH)
-collector = HypeSpotCollector(store, coin=HYPE_COIN, ws_url=HYPERLIQUID_WS_URL)
+collector = HypeSpotCollector(
+    store,
+    coin=HYPE_COIN,
+    ws_url=HYPERLIQUID_WS_URL,
+)
 collector_task: asyncio.Task | None = None
 summary_task: asyncio.Task | None = None
 
@@ -36,8 +44,9 @@ async def periodic_summary() -> None:
         spot = build_spot_demand_snapshot(store, state, coin=HYPE_COIN)
         windows = spot["windows"]
         logger.info(
-            "collector_summary connected=%s quality=%s stored=%s last_trade_age_ms=%s "
-            "coverage_4h=%.3f coverage_24h=%.3f coverage_3d=%.3f reconnects=%s",
+            "collector_summary connected=%s quality=%s stored=%s "
+            "last_trade_age_ms=%s coverage_4h=%.3f coverage_24h=%.3f "
+            "coverage_3d=%.3f reconnects=%s recoveries=%s/%s unresolved_gaps=%s",
             state["connected"],
             spot["data_quality"],
             spot["collector"]["stored_trades"],
@@ -46,14 +55,21 @@ async def periodic_summary() -> None:
             windows["24h"]["coverage_ratio"],
             windows["3d"]["coverage_ratio"],
             state["reconnects"],
+            state["recovery_successes"],
+            state["recovery_attempts"],
+            spot["collector"]["unresolved_gaps"],
         )
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global collector_task, summary_task
-    collector_task = asyncio.create_task(collector.run(), name="hype-spot-collector")
-    summary_task = asyncio.create_task(periodic_summary(), name="collector-summary")
+    collector_task = asyncio.create_task(
+        collector.run(), name="hype-spot-collector"
+    )
+    summary_task = asyncio.create_task(
+        periodic_summary(), name="collector-summary"
+    )
     try:
         yield
     finally:
@@ -70,7 +86,11 @@ async def lifespan(_: FastAPI):
         store.close()
 
 
-app = FastAPI(title="HYPE Spot Collector", version="0.2.0", lifespan=lifespan)
+app = FastAPI(
+    title="HYPE Spot Collector",
+    version="0.3.0",
+    lifespan=lifespan,
+)
 
 
 @app.get("/health")
@@ -79,7 +99,7 @@ def health() -> dict:
     return {
         "status": "ok" if state["connected"] else "degraded",
         "service": "hype-spot-collector",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "time": datetime.now(timezone.utc).isoformat(),
         "collector": state,
     }
@@ -87,5 +107,8 @@ def health() -> dict:
 
 @app.get("/hype/spot-demand")
 def hype_spot_demand() -> dict:
-    state = collector.snapshot()
-    return build_spot_demand_snapshot(store, state, coin=HYPE_COIN)
+    return build_spot_demand_snapshot(
+        store,
+        collector.snapshot(),
+        coin=HYPE_COIN,
+    )
