@@ -108,6 +108,36 @@ def test_archive_is_written_before_old_raw_is_purged(tmp_path):
     store.close()
 
 
+def test_purged_boundary_bucket_is_not_overwritten_by_partial_raw(tmp_path):
+    store = TradeStore(str(tmp_path / "test.sqlite3"))
+    now = 1_800_000_000_000
+    cutoff = now - 14 * DAY_MS
+    boundary_start = (cutoff // FOUR_HOURS_MS) * FOUR_HOURS_MS
+    store.set_meta("coverage_epoch_ms", boundary_start - 1)
+
+    add_trade(store, t=cutoff - 60_000, side="B", tid=1)
+    add_trade(store, t=cutoff + 60_000, side="A", tid=2)
+    add_trade(store, t=now - DAY_MS, side="B", tid=3)
+
+    lifecycle = StorageLifecycle(
+        store,
+        config=StorageLifecycleConfig(raw_retention_days=14),
+    )
+    first = lifecycle.run_once(now_ms=now)
+    archived_before = store.get_aggregate_bucket("@107", "4h", boundary_start)
+    assert archived_before is not None
+    assert archived_before["trade_count"] == 2
+    assert first["purged_raw_trades"] == 1
+
+    lifecycle.run_once(now_ms=now + 10 * 60 * 1000)
+    archived_after = store.get_aggregate_bucket("@107", "4h", boundary_start)
+    assert archived_after is not None
+    assert archived_after["trade_count"] == 2
+    assert archived_after["buy_notional_usdc"] == 100.0
+    assert archived_after["sell_notional_usdc"] == 100.0
+    store.close()
+
+
 def test_gap_ledger_is_retained_for_90_days_then_purged(tmp_path):
     store = TradeStore(str(tmp_path / "test.sqlite3"))
     now = 1_800_000_000_000
