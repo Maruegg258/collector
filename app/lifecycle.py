@@ -16,7 +16,10 @@ DAY_MS = 24 * HOUR_MS
 
 @dataclass(frozen=True)
 class StorageLifecycleConfig:
-    raw_retention_days: int = 14
+    # Raw trades are only needed for the live/current completed 4H boundary,
+    # reconnect diagnostics, and short-horizon forensic work. Protocol-facing
+    # 24H/3D history is reconstructed from durable completed 4H aggregates.
+    raw_retention_hours: int = 12
     gap_retention_days: int = 90
     warning_ratio: float = 0.80
     critical_ratio: float = 0.95
@@ -37,7 +40,7 @@ class StorageLifecycle:
         self._last_report: dict[str, Any] = {
             "status": "NOT_RUN",
             "backend": store.backend_name,
-            "raw_retention_days": config.raw_retention_days,
+            "raw_retention_hours": config.raw_retention_hours,
             "gap_retention_days": config.gap_retention_days,
             "warning_ratio": config.warning_ratio,
             "critical_ratio": config.critical_ratio,
@@ -58,11 +61,9 @@ class StorageLifecycle:
     def _ceil_to_bucket(value_ms: int, bucket_ms: int) -> int:
         return ((value_ms + bucket_ms - 1) // bucket_ms) * bucket_ms
 
-    def _materialize_granularity(
+    def _materialize_completed_4h(
         self,
         *,
-        granularity: str,
-        bucket_ms: int,
         now_ms: int,
         raw_purged_before_ms: int | None,
     ) -> int:
@@ -70,22 +71,24 @@ class StorageLifecycle:
         if first_raw_ms is None:
             return 0
 
-        start_ms = (first_raw_ms // bucket_ms) * bucket_ms
+        start_ms = (first_raw_ms // FOUR_HOURS_MS) * FOUR_HOURS_MS
         if raw_purged_before_ms is not None:
+            # Never overwrite an archived boundary bucket using only the raw
+            # tail that remains after compaction.
             start_ms = max(
                 start_ms,
-                self._ceil_to_bucket(raw_purged_before_ms, bucket_ms),
+                self._ceil_to_bucket(raw_purged_before_ms, FOUR_HOURS_MS),
             )
-        final_end_ms = (now_ms // bucket_ms) * bucket_ms
+        final_end_ms = (now_ms // FOUR_HOURS_MS) * FOUR_HOURS_MS
         materialized = 0
 
-        while start_ms + bucket_ms <= final_end_ms:
-            end_ms = start_ms + bucket_ms
+        while start_ms + FOUR_HOURS_MS <= final_end_ms:
+            end_ms = start_ms + FOUR_HOURS_MS
             stats = self.store.aggregate_window(self.coin, start_ms, end_ms)
             complete, quality, unresolved_gap_count = self._bucket_quality(start_ms, end_ms)
             self.store.upsert_aggregate_bucket(
                 self.coin,
-                granularity,
+                "4h",
                 start_ms,
                 end_ms,
                 stats,
@@ -114,13 +117,16 @@ class StorageLifecycle:
     def _disk_status(self) -> dict[str, Any]:
         if self.store.backend_name != "sqlite" or not self.store.db_path:
             return {
-                "level": "NOT_APPLICABLE",
+                "level": "EXTERNAL_MONITOR_REQUIRED",
                 "used_bytes": None,
                 "total_bytes": None,
                 "free_bytes": None,
                 "usage_ratio": None,
                 "db_files_bytes": None,
-                "note": "PostgreSQL capacity is monitored at the database service level, not from the stateless collector filesystem.",
+                "note": (
+                    "PostgreSQL volume utilization must be monitored by Railway metrics; "
+                    "the stateless collector cannot inspect the database service volume."
+                ),
             }
 
         db_parent = Path(self.store.db_path).resolve().parent
@@ -143,20 +149,14 @@ class StorageLifecycle:
 
     def run_once(self, *, now_ms: int | None = None) -> dict[str, Any]:
         now_ms = int(time.time() * 1000) if now_ms is None else now_ms
-        raw_cutoff_ms = now_ms - self.config.raw_retention_days * DAY_MS
+        raw_cutoff_ms = now_ms - self.config.raw_retention_hours * HOUR_MS
         gap_cutoff_ms = now_ms - self.config.gap_retention_days * DAY_MS
 
         with self._lock:
             previous_raw_waterline_ms = self.store.get_meta_int("raw_purged_before_ms")
-            four_h_materialized = self._materialize_granularity(
-                granularity="4h",
-                bucket_ms=FOUR_HOURS_MS,
-                now_ms=now_ms,
-                raw_purged_before_ms=previous_raw_waterline_ms,
-            )
-            daily_materialized = self._materialize_granularity(
-                granularity="1d",
-                bucket_ms=DAY_MS,
+
+            # Archive all completed 4H buckets before deleting any raw rows.
+            four_h_materialized = self._materialize_completed_4h(
                 now_ms=now_ms,
                 raw_purged_before_ms=previous_raw_waterline_ms,
             )
@@ -171,12 +171,16 @@ class StorageLifecycle:
             wal_checkpoint = self.store.checkpoint_wal()
             disk = self._disk_status()
 
-            status = disk["level"] if disk["level"] != "NOT_APPLICABLE" else "NORMAL"
+            status = disk["level"]
+            if status == "EXTERNAL_MONITOR_REQUIRED":
+                # Do not falsely call PostgreSQL volume capacity NORMAL.
+                status = "EXTERNAL_MONITOR_REQUIRED"
+
             report = {
                 "status": status,
                 "backend": self.store.backend_name,
                 "ran_at_ms": now_ms,
-                "raw_retention_days": self.config.raw_retention_days,
+                "raw_retention_hours": self.config.raw_retention_hours,
                 "gap_retention_days": self.config.gap_retention_days,
                 "warning_ratio": self.config.warning_ratio,
                 "critical_ratio": self.config.critical_ratio,
@@ -188,9 +192,7 @@ class StorageLifecycle:
                 "purged_raw_trades": purged_raw,
                 "purged_gap_records": purged_gaps,
                 "aggregate_4h_materialized": four_h_materialized,
-                "aggregate_1d_materialized": daily_materialized,
                 "aggregate_4h_total": self.store.aggregate_bucket_count(self.coin, "4h"),
-                "aggregate_1d_total": self.store.aggregate_bucket_count(self.coin, "1d"),
                 "wal_checkpoint": {
                     "busy": wal_checkpoint[0],
                     "log_frames": wal_checkpoint[1],
@@ -198,10 +200,13 @@ class StorageLifecycle:
                 },
                 "disk": disk,
                 "policy": {
-                    "critical_action": "ALERT_ONLY_KEEP_14D_RETENTION",
+                    "raw_compaction": "12H_RAW_PLUS_DURABLE_4H_ARCHIVE",
+                    "archive_retention": "INDEFINITE",
+                    "postgres_capacity_source": "RAILWAY_METRICS",
+                    "critical_action": "ALERT_AND_REVIEW_VOLUME_OR_RETENTION",
                     "note": (
-                        "Critical disk usage does not silently shorten raw retention; "
-                        "operator intervention is required."
+                        "Protocol-facing 24H/3D Spot Delta is reconstructed from completed "
+                        "4H archives, so raw compaction does not discard required history."
                     ),
                 },
             }
