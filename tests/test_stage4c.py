@@ -12,7 +12,7 @@ from app.storage_mirror import MirroringTradeStore
 from app.storage_postgres import PostgresTradeStore
 
 
-def test_postgres_leases_recognize_active_overlap():
+def test_postgres_leases_recognize_active_overlap_and_stop_is_terminal():
     database_url = os.getenv("TEST_POSTGRES_URL")
     if not database_url:
         pytest.skip("TEST_POSTGRES_URL not configured")
@@ -31,6 +31,12 @@ def test_postgres_leases_recognize_active_overlap():
 
         a.update(connected=False, heartbeat_ms=now + 4_000, last_message_at_ms=now + 3_000, stopped=True)
         assert b.active_other_exists(now_ms=now + 5_000) is False
+
+        # A late heartbeat from a shutting-down task must not resurrect A.
+        a.update(connected=True, heartbeat_ms=now + 6_000, last_message_at_ms=now + 6_000)
+        a_snapshot = a.snapshot()
+        assert a_snapshot["own_connected"] is False
+        assert a_snapshot["own_stopped_at_ms"] is not None
 
         snapshot = b.snapshot()
         assert snapshot["active_instances"] >= 1
@@ -95,5 +101,36 @@ def test_sqlite_primary_mirrors_mutations_to_postgres(tmp_path):
         mirror = store.mirror_snapshot()
         assert mirror["failures"] == 0
         assert mirror["healthy"] is True
+    finally:
+        store.close()
+
+
+def test_mirror_failure_remains_unhealthy_after_later_success(monkeypatch, tmp_path):
+    database_url = os.getenv("TEST_POSTGRES_URL")
+    if not database_url:
+        pytest.skip("TEST_POSTGRES_URL not configured")
+
+    primary = SQLiteTradeStore(str(tmp_path / "sticky.sqlite3"))
+    target = PostgresTradeStore(database_url)
+    store = MirroringTradeStore(primary, target)
+    original_insert = target.insert_many
+    calls = {"n": 0}
+
+    def fail_once(records):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("synthetic mirror failure")
+        return original_insert(records)
+
+    monkeypatch.setattr(target, "insert_many", fail_once)
+    try:
+        first = TradeRecord("sticky", 1_800_000_000_000, 1, "B", 100.0, 1.0, 100.0, 100.0)
+        second = TradeRecord("sticky", 1_800_000_001_000, 2, "B", 100.0, 1.0, 100.0, 100.0)
+        assert store.insert_many([first]) == (1, 0)
+        assert store.insert_many([second]) == (1, 0)
+        state = store.mirror_snapshot()
+        assert state["failures"] == 1
+        assert state["healthy"] is False
+        assert "synthetic mirror failure" in state["last_error"]
     finally:
         store.close()
