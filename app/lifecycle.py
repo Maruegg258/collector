@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .storage import TradeStore
+from .storage_protocol import StorageBackend
 
 HOUR_MS = 60 * 60 * 1000
 FOUR_HOURS_MS = 4 * HOUR_MS
@@ -18,14 +18,14 @@ DAY_MS = 24 * HOUR_MS
 class StorageLifecycleConfig:
     raw_retention_days: int = 14
     gap_retention_days: int = 90
-    warning_ratio: float = 0.60
-    critical_ratio: float = 0.80
+    warning_ratio: float = 0.80
+    critical_ratio: float = 0.95
 
 
 class StorageLifecycle:
     def __init__(
         self,
-        store: TradeStore,
+        store: StorageBackend,
         *,
         coin: str = "@107",
         config: StorageLifecycleConfig = StorageLifecycleConfig(),
@@ -36,6 +36,7 @@ class StorageLifecycle:
         self._lock = threading.RLock()
         self._last_report: dict[str, Any] = {
             "status": "NOT_RUN",
+            "backend": store.backend_name,
             "raw_retention_days": config.raw_retention_days,
             "gap_retention_days": config.gap_retention_days,
             "warning_ratio": config.warning_ratio,
@@ -81,9 +82,7 @@ class StorageLifecycle:
         while start_ms + bucket_ms <= final_end_ms:
             end_ms = start_ms + bucket_ms
             stats = self.store.aggregate_window(self.coin, start_ms, end_ms)
-            complete, quality, unresolved_gap_count = self._bucket_quality(
-                start_ms, end_ms
-            )
+            complete, quality, unresolved_gap_count = self._bucket_quality(start_ms, end_ms)
             self.store.upsert_aggregate_bucket(
                 self.coin,
                 granularity,
@@ -99,13 +98,11 @@ class StorageLifecycle:
 
         return materialized
 
-    def _db_files_bytes(self) -> int:
+    def _db_files_bytes(self) -> int | None:
+        if self.store.backend_name != "sqlite" or not self.store.db_path:
+            return None
         db_path = Path(self.store.db_path)
-        candidates = [
-            db_path,
-            Path(str(db_path) + "-wal"),
-            Path(str(db_path) + "-shm"),
-        ]
+        candidates = [db_path, Path(str(db_path) + "-wal"), Path(str(db_path) + "-shm")]
         total = 0
         for path in candidates:
             try:
@@ -115,6 +112,17 @@ class StorageLifecycle:
         return total
 
     def _disk_status(self) -> dict[str, Any]:
+        if self.store.backend_name != "sqlite" or not self.store.db_path:
+            return {
+                "level": "NOT_APPLICABLE",
+                "used_bytes": None,
+                "total_bytes": None,
+                "free_bytes": None,
+                "usage_ratio": None,
+                "db_files_bytes": None,
+                "note": "PostgreSQL capacity is monitored at the database service level, not from the stateless collector filesystem.",
+            }
+
         db_parent = Path(self.store.db_path).resolve().parent
         usage = shutil.disk_usage(db_parent)
         ratio = usage.used / usage.total if usage.total else 0.0
@@ -154,26 +162,24 @@ class StorageLifecycle:
             )
 
             raw_before = self.store.count(self.coin)
-            purged_raw = self.store.delete_trades_before(
-                raw_cutoff_ms,
-                coin=self.coin,
-            )
+            purged_raw = self.store.delete_trades_before(raw_cutoff_ms, coin=self.coin)
             raw_after = self.store.count(self.coin)
             raw_waterline_ms = max(previous_raw_waterline_ms or 0, raw_cutoff_ms)
             self.store.set_meta("raw_purged_before_ms", raw_waterline_ms)
 
-            purged_gaps = self.store.delete_gaps_before(
-                gap_cutoff_ms,
-                coin=self.coin,
-            )
+            purged_gaps = self.store.delete_gaps_before(gap_cutoff_ms, coin=self.coin)
             wal_checkpoint = self.store.checkpoint_wal()
             disk = self._disk_status()
 
+            status = disk["level"] if disk["level"] != "NOT_APPLICABLE" else "NORMAL"
             report = {
-                "status": disk["level"],
+                "status": status,
+                "backend": self.store.backend_name,
                 "ran_at_ms": now_ms,
                 "raw_retention_days": self.config.raw_retention_days,
                 "gap_retention_days": self.config.gap_retention_days,
+                "warning_ratio": self.config.warning_ratio,
+                "critical_ratio": self.config.critical_ratio,
                 "raw_cutoff_ms": raw_cutoff_ms,
                 "raw_purged_before_ms": raw_waterline_ms,
                 "gap_cutoff_ms": gap_cutoff_ms,
@@ -183,12 +189,8 @@ class StorageLifecycle:
                 "purged_gap_records": purged_gaps,
                 "aggregate_4h_materialized": four_h_materialized,
                 "aggregate_1d_materialized": daily_materialized,
-                "aggregate_4h_total": self.store.aggregate_bucket_count(
-                    self.coin, "4h"
-                ),
-                "aggregate_1d_total": self.store.aggregate_bucket_count(
-                    self.coin, "1d"
-                ),
+                "aggregate_4h_total": self.store.aggregate_bucket_count(self.coin, "4h"),
+                "aggregate_1d_total": self.store.aggregate_bucket_count(self.coin, "1d"),
                 "wal_checkpoint": {
                     "busy": wal_checkpoint[0],
                     "log_frames": wal_checkpoint[1],
