@@ -91,7 +91,3 @@ pytest -q
 ```bash
 python scripts/live_smoke.py
 ```
-
-## Operational gap audit
-
-`scripts/audit_unresolved_gaps.py` is a temporary, read-only operational audit helper used to inspect legacy `UNRESOLVED` rows during the Protocol v1.1 transition. It opens a read-only transaction, prints sanitized gap metadata plus Binance-aligned 4H materiality summaries, and performs no mutation. It should not remain configured as a recurring pre-deploy command after the audit is complete.
