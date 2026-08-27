@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import os
 import shutil
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -54,18 +53,28 @@ class StorageLifecycle:
         quality = "COMPLETE" if complete else ("GAPPED" if gaps else "PARTIAL_HISTORY")
         return complete, quality, len(gaps)
 
+    @staticmethod
+    def _ceil_to_bucket(value_ms: int, bucket_ms: int) -> int:
+        return ((value_ms + bucket_ms - 1) // bucket_ms) * bucket_ms
+
     def _materialize_granularity(
         self,
         *,
         granularity: str,
         bucket_ms: int,
         now_ms: int,
+        raw_purged_before_ms: int | None,
     ) -> int:
         first_raw_ms = self.store.first_trade_time_ms(self.coin)
         if first_raw_ms is None:
             return 0
 
         start_ms = (first_raw_ms // bucket_ms) * bucket_ms
+        if raw_purged_before_ms is not None:
+            start_ms = max(
+                start_ms,
+                self._ceil_to_bucket(raw_purged_before_ms, bucket_ms),
+            )
         final_end_ms = (now_ms // bucket_ms) * bucket_ms
         materialized = 0
 
@@ -130,15 +139,18 @@ class StorageLifecycle:
         gap_cutoff_ms = now_ms - self.config.gap_retention_days * DAY_MS
 
         with self._lock:
+            previous_raw_waterline_ms = self.store.get_meta_int("raw_purged_before_ms")
             four_h_materialized = self._materialize_granularity(
                 granularity="4h",
                 bucket_ms=FOUR_HOURS_MS,
                 now_ms=now_ms,
+                raw_purged_before_ms=previous_raw_waterline_ms,
             )
             daily_materialized = self._materialize_granularity(
                 granularity="1d",
                 bucket_ms=DAY_MS,
                 now_ms=now_ms,
+                raw_purged_before_ms=previous_raw_waterline_ms,
             )
 
             raw_before = self.store.count(self.coin)
@@ -147,6 +159,9 @@ class StorageLifecycle:
                 coin=self.coin,
             )
             raw_after = self.store.count(self.coin)
+            raw_waterline_ms = max(previous_raw_waterline_ms or 0, raw_cutoff_ms)
+            self.store.set_meta("raw_purged_before_ms", raw_waterline_ms)
+
             purged_gaps = self.store.delete_gaps_before(
                 gap_cutoff_ms,
                 coin=self.coin,
@@ -160,6 +175,7 @@ class StorageLifecycle:
                 "raw_retention_days": self.config.raw_retention_days,
                 "gap_retention_days": self.config.gap_retention_days,
                 "raw_cutoff_ms": raw_cutoff_ms,
+                "raw_purged_before_ms": raw_waterline_ms,
                 "gap_cutoff_ms": gap_cutoff_ms,
                 "raw_trades_before": raw_before,
                 "raw_trades_after": raw_after,
