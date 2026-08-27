@@ -24,20 +24,36 @@ def test_materializes_completed_4h_bucket(tmp_path):
     assert bucket is not None
     assert bucket["net_delta_usdc"] == 100.0
     assert bucket["complete"] == 1
+    assert bucket["quality"] == "COMPLETE"
     assert report["aggregate_4h_total"] >= 1
     store.close()
 
 
-def test_unresolved_gap_archives_bucket_as_gapped(tmp_path):
+def test_minor_gap_archives_bucket_as_minor_gap_not_complete(tmp_path):
     store = TradeStore(str(tmp_path / "test.sqlite3"))
     now = 1_800_000_000_000
     start = ((now // FOUR_HOURS_MS) - 1) * FOUR_HOURS_MS
     store.set_meta("coverage_epoch_ms", start - 1)
     add_trade(store, t=start + 1_000, side="B", tid=1)
-    store.add_gap("@107", start + 10_000, start + 20_000, status="UNRESOLVED", reason="test")
+    store.add_gap("@107", start + 10_000, start + 11_583, status="UNRESOLVED", reason="test")
     StorageLifecycle(store).run_once(now_ms=now)
     bucket = store.get_aggregate_bucket("@107", "4h", start)
-    assert bucket["quality"] == "GAPPED"
+    assert bucket["quality"] == "MINOR_GAP"
+    assert bucket["complete"] == 0
+    store.close()
+
+
+def test_material_gap_archives_bucket_as_material_gap(tmp_path):
+    store = TradeStore(str(tmp_path / "test.sqlite3"))
+    now = 1_800_000_000_000
+    start = ((now // FOUR_HOURS_MS) - 1) * FOUR_HOURS_MS
+    store.set_meta("coverage_epoch_ms", start - 1)
+    add_trade(store, t=start + 1_000, side="B", tid=1)
+    store.add_gap("@107", start + 10_000, start + 16_000, status="UNRESOLVED", reason="test")
+    StorageLifecycle(store).run_once(now_ms=now)
+    bucket = store.get_aggregate_bucket("@107", "4h", start)
+    assert bucket["quality"] == "MATERIAL_GAP"
+    assert bucket["complete"] == 0
     store.close()
 
 
@@ -94,4 +110,5 @@ def test_disk_guardrail_levels(monkeypatch, tmp_path):
     report = lifecycle.run_once(now_ms=1_800_000_000_001)
     assert report["status"] == "CRITICAL"
     assert report["policy"]["raw_compaction"] == "12H_RAW_PLUS_DURABLE_4H_ARCHIVE"
+    assert report["policy"]["spot_integrity_policy"] == "HYPE_PROTOCOL_V1_1_CONTINUITY_MATERIALITY"
     store.close()
