@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -56,6 +57,34 @@ class TradeStore:
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_trades_coin_time ON trades (coin, time_ms)"
             )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS collector_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS coverage_gaps (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    coin TEXT NOT NULL,
+                    start_ms INTEGER NOT NULL,
+                    end_ms INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('HEALED', 'UNRESOLVED')),
+                    reason TEXT NOT NULL,
+                    recovery_earliest_ms INTEGER,
+                    recovery_latest_ms INTEGER,
+                    recovered_trade_count INTEGER NOT NULL DEFAULT 0,
+                    created_at_ms INTEGER NOT NULL,
+                    UNIQUE(coin, start_ms, end_ms)
+                )
+                """
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_gaps_coin_time ON coverage_gaps (coin, start_ms, end_ms)"
+            )
             self.conn.commit()
 
     def insert_many(self, records: Iterable[TradeRecord]) -> tuple[int, int]:
@@ -89,8 +118,7 @@ class TradeStore:
             )
             self.conn.commit()
             inserted = self.conn.total_changes - before
-        duplicates = len(rows) - inserted
-        return inserted, duplicates
+        return inserted, len(rows) - inserted
 
     def count(self, coin: str | None = None) -> int:
         with self._lock:
@@ -150,9 +178,99 @@ class TradeStore:
             "base_delta_hype": float(row["base_delta_hype"]),
             "total_notional_usdc": total,
             "delta_ratio": (net / total) if total > 0 else None,
-            "first_trade_time_ms": None if row["first_trade_time_ms"] is None else int(row["first_trade_time_ms"]),
-            "last_trade_time_ms": None if row["last_trade_time_ms"] is None else int(row["last_trade_time_ms"]),
+            "first_trade_time_ms": None
+            if row["first_trade_time_ms"] is None
+            else int(row["first_trade_time_ms"]),
+            "last_trade_time_ms": None
+            if row["last_trade_time_ms"] is None
+            else int(row["last_trade_time_ms"]),
         }
+
+    def set_meta(self, key: str, value: str | int) -> None:
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT INTO collector_meta(key, value) VALUES(?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, str(value)),
+            )
+            self.conn.commit()
+
+    def get_meta_int(self, key: str) -> int | None:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT value FROM collector_meta WHERE key = ?", (key,)
+            ).fetchone()
+        return None if row is None else int(row["value"])
+
+    def add_gap(
+        self,
+        coin: str,
+        start_ms: int,
+        end_ms: int,
+        *,
+        status: str,
+        reason: str,
+        recovery_earliest_ms: int | None = None,
+        recovery_latest_ms: int | None = None,
+        recovered_trade_count: int = 0,
+    ) -> None:
+        if end_ms <= start_ms:
+            return
+        with self._lock:
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO coverage_gaps(
+                    coin, start_ms, end_ms, status, reason,
+                    recovery_earliest_ms, recovery_latest_ms,
+                    recovered_trade_count, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    coin,
+                    start_ms,
+                    end_ms,
+                    status,
+                    reason,
+                    recovery_earliest_ms,
+                    recovery_latest_ms,
+                    recovered_trade_count,
+                    int(time.time() * 1000),
+                ),
+            )
+            self.conn.commit()
+
+    def gaps_overlapping(
+        self,
+        coin: str,
+        start_ms: int,
+        end_ms: int,
+        *,
+        status: str = "UNRESOLVED",
+    ) -> list[dict]:
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT * FROM coverage_gaps
+                WHERE coin = ? AND status = ? AND end_ms > ? AND start_ms < ?
+                ORDER BY start_ms
+                """,
+                (coin, status, start_ms, end_ms),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def unresolved_gap_count(self, coin: str) -> int:
+        with self._lock:
+            row = self.conn.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM coverage_gaps
+                WHERE coin = ? AND status = 'UNRESOLVED'
+                """,
+                (coin,),
+            ).fetchone()
+        return int(row["n"])
 
     def close(self) -> None:
         with self._lock:
