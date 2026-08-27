@@ -108,7 +108,10 @@ def build_spot_demand_snapshot(
             start_ms,
             end_ms,
         )
-        complete = coverage >= quality.complete_threshold
+        complete = (
+            coverage >= quality.complete_threshold
+            and len(gaps) == 0
+        )
         windows[label] = {
             "mode": mode,
             "window_start_ms": start_ms,
