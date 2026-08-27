@@ -88,7 +88,13 @@ class HypeSpotCollector:
     def _prepare_lease_handoff(self, now_ms: int) -> None:
         if self.lease is None:
             return
-        if self.lease.active_other_exists(now_ms=now_ms):
+        if self._pending_gap_start_ms is not None:
+            logger.info(
+                "continuity_reconnect preserve_pending_gap_start start_ms=%s instance=%s",
+                self._pending_gap_start_ms,
+                self.lease.instance_id,
+            )
+        elif self.lease.active_other_exists(now_ms=now_ms):
             self._pending_gap_start_ms = None
             logger.info("continuity_handoff covered_by_active_peer instance=%s", self.lease.instance_id)
         else:
