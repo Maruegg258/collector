@@ -10,11 +10,18 @@ from psycopg.rows import dict_row
 class CollectorLeaseCoordinator:
     """Track per-deployment liveness so overlapping collectors form one coverage stream."""
 
-    def __init__(self, database_url: str, instance_id: str, *, stale_after_ms: int = 15_000) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        instance_id: str,
+        *,
+        stale_after_ms: int = 15_000,
+    ) -> None:
         self.database_url = database_url
         self.instance_id = instance_id
         self.stale_after_ms = stale_after_ms
         self._lock = threading.RLock()
+        self._closed = False
         self.conn = psycopg.connect(database_url, row_factory=dict_row)
         with self.conn.cursor() as cur:
             cur.execute(
@@ -34,7 +41,14 @@ class CollectorLeaseCoordinator:
             )
             self.conn.commit()
 
-    def update(self, *, connected: bool, heartbeat_ms: int | None = None, last_message_at_ms: int | None = None, stopped: bool = False) -> None:
+    def update(
+        self,
+        *,
+        connected: bool,
+        heartbeat_ms: int | None = None,
+        last_message_at_ms: int | None = None,
+        stopped: bool = False,
+    ) -> None:
         now_ms = int(time.time() * 1000) if heartbeat_ms is None else int(heartbeat_ms)
         with self._lock, self.conn.cursor() as cur:
             cur.execute(
@@ -117,10 +131,42 @@ class CollectorLeaseCoordinator:
             "stale_after_ms": self.stale_after_ms,
             "own_heartbeat_ms": None if own is None else int(own["heartbeat_ms"]),
             "own_connected": False if own is None else bool(own["connected"]),
-            "own_last_message_at_ms": None if own is None or own["last_message_at_ms"] is None else int(own["last_message_at_ms"]),
-            "own_stopped_at_ms": None if own is None or own["stopped_at_ms"] is None else int(own["stopped_at_ms"]),
+            "own_last_message_at_ms": (
+                None
+                if own is None or own["last_message_at_ms"] is None
+                else int(own["last_message_at_ms"])
+            ),
+            "own_stopped_at_ms": (
+                None
+                if own is None or own["stopped_at_ms"] is None
+                else int(own["stopped_at_ms"])
+            ),
         }
 
     def close(self) -> None:
+        """Terminally retire this lease before closing the database connection.
+
+        The collector's normal shutdown path already marks the lease stopped, but
+        making close() defensive prevents a caller, test, or exceptional cleanup
+        path from leaving a transient connected lease behind until TTL expiry.
+        """
         with self._lock:
-            self.conn.close()
+            if self._closed:
+                return
+            try:
+                if not self.conn.closed:
+                    now_ms = int(time.time() * 1000)
+                    with self.conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE collector_leases
+                            SET connected=FALSE,
+                                stopped_at_ms=COALESCE(stopped_at_ms, %s)
+                            WHERE instance_id=%s
+                            """,
+                            (now_ms, self.instance_id),
+                        )
+                        self.conn.commit()
+            finally:
+                self.conn.close()
+                self._closed = True
