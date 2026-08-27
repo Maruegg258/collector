@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from .analytics import build_spot_demand_snapshot
 from .collector import HypeSpotCollector
 from .lifecycle import StorageLifecycle, StorageLifecycleConfig
-from .storage import TradeStore
+from .storage_factory import create_store
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -20,6 +20,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.getenv("DB_PATH", "./data/hype_spot.sqlite3")
+DATABASE_URL = os.getenv("DATABASE_URL")
+STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "sqlite")
 HYPE_COIN = os.getenv("HYPE_COIN", "@107")
 HYPERLIQUID_WS_URL = os.getenv(
     "HYPERLIQUID_WS_URL", "wss://api.hyperliquid.xyz/ws"
@@ -32,10 +34,14 @@ STORAGE_MAINTENANCE_INTERVAL_SECONDS = max(
 )
 RAW_RETENTION_DAYS = max(4, int(os.getenv("RAW_RETENTION_DAYS", "14")))
 GAP_RETENTION_DAYS = max(7, int(os.getenv("GAP_RETENTION_DAYS", "90")))
-VOLUME_WARNING_RATIO = float(os.getenv("VOLUME_WARNING_RATIO", "0.60"))
-VOLUME_CRITICAL_RATIO = float(os.getenv("VOLUME_CRITICAL_RATIO", "0.80"))
+VOLUME_WARNING_RATIO = float(os.getenv("VOLUME_WARNING_RATIO", "0.80"))
+VOLUME_CRITICAL_RATIO = float(os.getenv("VOLUME_CRITICAL_RATIO", "0.95"))
 
-store = TradeStore(DB_PATH)
+store = create_store(
+    backend=STORAGE_BACKEND,
+    db_path=DB_PATH,
+    database_url=DATABASE_URL,
+)
 collector = HypeSpotCollector(
     store,
     coin=HYPE_COIN,
@@ -64,11 +70,12 @@ async def periodic_summary() -> None:
         windows = spot["windows"]
         storage = lifecycle.snapshot()
         disk = storage.get("disk") or {}
+        disk_ratio = disk.get("usage_ratio")
         logger.info(
             "collector_summary connected=%s quality=%s stored=%s "
             "last_trade_age_ms=%s coverage_4h=%.3f coverage_24h=%.3f "
             "coverage_3d=%.3f reconnects=%s recoveries=%s/%s unresolved_gaps=%s "
-            "storage=%s disk_ratio=%s aggregate_4h=%s aggregate_1d=%s",
+            "backend=%s storage=%s disk_ratio=%s aggregate_4h=%s aggregate_1d=%s",
             state["connected"],
             spot["data_quality"],
             spot["collector"]["stored_trades"],
@@ -80,8 +87,9 @@ async def periodic_summary() -> None:
             state["recovery_successes"],
             state["recovery_attempts"],
             spot["collector"]["unresolved_gaps"],
+            store.backend_name,
             storage.get("status", "NOT_RUN"),
-            None if not disk else round(float(disk["usage_ratio"]), 4),
+            None if disk_ratio is None else round(float(disk_ratio), 4),
             storage.get("aggregate_4h_total"),
             storage.get("aggregate_1d_total"),
         )
@@ -97,17 +105,19 @@ async def periodic_storage_maintenance() -> None:
                 log = logger.warning
             elif level == "CRITICAL":
                 log = logger.critical
+            disk = report.get("disk") or {}
             log(
-                "storage_maintenance status=%s raw=%s->%s purged=%s "
-                "aggregate_4h=%s aggregate_1d=%s disk_ratio=%.4f db_files_bytes=%s",
+                "storage_maintenance status=%s backend=%s raw=%s->%s purged=%s "
+                "aggregate_4h=%s aggregate_1d=%s disk_ratio=%s db_files_bytes=%s",
                 level,
+                store.backend_name,
                 report["raw_trades_before"],
                 report["raw_trades_after"],
                 report["purged_raw_trades"],
                 report["aggregate_4h_total"],
                 report["aggregate_1d_total"],
-                report["disk"]["usage_ratio"],
-                report["disk"]["db_files_bytes"],
+                disk.get("usage_ratio"),
+                disk.get("db_files_bytes"),
             )
         except asyncio.CancelledError:
             raise
@@ -146,7 +156,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="HYPE Spot Collector",
-    version="0.4.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
@@ -157,8 +167,9 @@ def health() -> dict:
     return {
         "status": "ok" if state["connected"] else "degraded",
         "service": "hype-spot-collector",
-        "version": "0.4.0",
+        "version": "0.5.0",
         "time": datetime.now(timezone.utc).isoformat(),
+        "storage_backend": store.backend_name,
         "collector": state,
         "storage": lifecycle.snapshot(),
     }
@@ -175,4 +186,7 @@ def hype_spot_demand() -> dict:
 
 @app.get("/storage/status")
 def storage_status() -> dict:
-    return lifecycle.snapshot()
+    return {
+        "backend": store.backend_name,
+        **lifecycle.snapshot(),
+    }
