@@ -40,7 +40,7 @@ jobs:
         with:
           python-version: '3.13'
       - run: pip install -r requirements.txt pytest
-      - run: pytest -q tests/test_storage_contract.py tests/test_migration.py
+      - run: pytest -q tests/test_storage_contract.py tests/test_migration.py tests/test_stage4c.py
 
   hyperliquid-live-smoke:
     runs-on: ubuntu-latest
