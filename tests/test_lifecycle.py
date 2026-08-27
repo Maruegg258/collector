@@ -110,7 +110,7 @@ def test_archive_is_written_before_old_raw_is_purged(tmp_path):
 
 def test_purged_boundary_bucket_is_not_overwritten_by_partial_raw(tmp_path):
     store = TradeStore(str(tmp_path / "test.sqlite3"))
-    now = 1_800_000_000_000
+    now = 1_800_000_000_000 + 2 * 60 * 60 * 1000
     cutoff = now - 14 * DAY_MS
     boundary_start = (cutoff // FOUR_HOURS_MS) * FOUR_HOURS_MS
     store.set_meta("coverage_epoch_ms", boundary_start - 1)
