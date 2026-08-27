@@ -30,29 +30,22 @@ Raw trades are retained for **12 hours by default** for current-bucket calculati
 
 ## Data quality — Protocol v1.1
 
-Engineering continuity facts and trading usability are separate.
+`/hype/spot-demand` separates engineering continuity from trading usability:
 
-- Every unprovable interval remains `UNRESOLVED`; missing trades are never filled, guessed, or assumed to be zero.
-- `COMPLETE`: no unresolved continuity gap in the completed 4H bucket.
-- `MINOR_GAP`: quantitative continuity still meets the Protocol v1.1 conservative tolerance: each independent gap <= 5s, total unresolved duration <= 10s per completed 4H, and <= 2 independent gaps.
-- `MATERIAL_GAP`: any quantitative limit above is exceeded.
-- `MINOR_GAP` does **not** automatically disable FULL SPOT MODE.
-- `MATERIAL_GAP`, stale/disconnected official feed, or archive loss degrades Spot usability.
-
-`/hype/spot-demand` reports:
-
+- `spot_integrity`: `COMPLETE`, `MINOR_GAP`, `MATERIAL_GAP`, or `UNKNOWN`
 - `data_quality`: `FULL`, `WARMING_UP`, or `DEGRADED`
 - `full_spot_mode_ready`
-- `spot_integrity`
-- per-window `COMPLETE` / `MINOR_GAP` / `MATERIAL_GAP`, gap duration/count, coverage and archive source
-- `monitor_review.signal_robustness_required`
-- `monitor_review.material_event_override_required`
-- `monitor_review.repeated_minor_gap_review_required`
+- per-window coverage, unresolved duration and independent-gap counts
+- `usable_for_spot_mode`, distinct from strict `complete`
+- Monitor review flags for Signal Robustness / Material Event context
+- archive source (`materialized_4h`, `raw_fallback`, or `missing`)
 - collector freshness and reconnect/recovery counters
 
-The Collector only classifies **quantitative continuity**. It does not invent severe-event context. When a `MINOR_GAP` exists, the HYPE Monitor must apply Protocol v1.1's Signal Robustness Rule and may override it to `MATERIAL_GAP` if severe market/protocol conditions or systematic continuity instability make the missing interval materially important.
+Quantitative MINOR_GAP limits are intentionally conservative: one unresolved interval must be <=5s, total unresolved duration per completed 4H <=10s, and no more than two independent gaps per completed 4H. MINOR_GAP remains UNRESOLVED and missing trades are never filled or assumed zero, but it does not automatically block FULL SPOT MODE. MATERIAL_GAP, stale/disconnected official data, or missing required archive data does degrade trading usability.
 
-Gap recovery still uses Hyperliquid official `recentTrades` with strict overlap proof and bounded retries. An unresolved interval is never relabelled HEALED merely because it is small.
+The Collector only classifies quantitative continuity. The HYPE Monitor must still override a MINOR_GAP to MATERIAL when severe market/protocol context or systematic repeated instability makes the missing interval materially important.
+
+Gap recovery uses Hyperliquid official `recentTrades` with strict overlap proof and bounded retries. Unresolved gaps remain explicit.
 
 ## Reliability
 
@@ -98,3 +91,7 @@ pytest -q
 ```bash
 python scripts/live_smoke.py
 ```
+
+## Operational gap audit
+
+`scripts/audit_unresolved_gaps.py` is a temporary, read-only operational audit helper used to inspect legacy `UNRESOLVED` rows during the Protocol v1.1 transition. It opens a read-only transaction, prints sanitized gap metadata plus Binance-aligned 4H materiality summaries, and performs no mutation. It should not remain configured as a recurring pre-deploy command after the audit is complete.
