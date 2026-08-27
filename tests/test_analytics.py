@@ -82,7 +82,7 @@ def test_full_after_more_than_72h_continuous_current_process(tmp_path):
     store.close()
 
 
-def test_redeploy_does_not_credit_old_persisted_history_as_complete(tmp_path):
+def test_redeploy_initializes_persistent_coverage_epoch_at_current_start(tmp_path):
     store = TradeStore(str(tmp_path / "test.sqlite3"))
     now = 1_800_000_000_000
     add_trade(store, t=now - 80 * HOUR_MS, side="B", px=100, sz=1, tid=1)
@@ -91,26 +91,38 @@ def test_redeploy_does_not_credit_old_persisted_history_as_complete(tmp_path):
 
     snap = build_spot_demand_snapshot(store, state(started=current_start), now_ms=now)
     assert snap["collector"]["stored_trades"] == 2
-    assert snap["collector"]["reliable_since_ms"] == current_start
+    assert snap["collector"]["coverage_epoch_ms"] == current_start
     assert snap["data_quality"] == "WARMING_UP"
     assert snap["windows"]["3d"]["complete"] is False
     store.close()
 
 
-def test_reconnect_resets_reliable_continuity(tmp_path):
+def test_unresolved_reconnect_gap_reduces_coverage_without_resetting_epoch(tmp_path):
     store = TradeStore(str(tmp_path / "test.sqlite3"))
     now = 1_800_000_000_000
     started = now - 80 * HOUR_MS
-    reconnected = now - 2 * HOUR_MS
+    gap_start = now - 2 * HOUR_MS
+    gap_end = gap_start + 60_000
     add_trade(store, t=started, side="B", px=100, sz=1, tid=1)
     add_trade(store, t=now - 1_000, side="A", px=100, sz=1, tid=2)
+    store.set_meta("coverage_epoch_ms", started)
+    store.add_gap(
+        "@107",
+        gap_start,
+        gap_end,
+        status="UNRESOLVED",
+        reason="test_reconnect_gap",
+    )
 
     snap = build_spot_demand_snapshot(
         store,
-        state(started=started, reconnects=1, connected_at=reconnected),
+        state(started=started, reconnects=1, connected_at=gap_end),
         now_ms=now,
     )
-    assert snap["collector"]["reliable_since_ms"] == reconnected
+    assert snap["collector"]["coverage_epoch_ms"] == started
+    assert snap["collector"]["unresolved_gaps"] == 1
+    assert snap["windows"]["3d"]["unresolved_gap_count"] == 1
+    assert snap["windows"]["3d"]["complete"] is False
     assert snap["data_quality"] == "WARMING_UP"
     store.close()
 
