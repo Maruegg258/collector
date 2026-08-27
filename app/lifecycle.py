@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .spot_integrity import summarize_unresolved_gaps
 from .storage_protocol import StorageBackend
 
 HOUR_MS = 60 * 60 * 1000
@@ -49,13 +50,13 @@ class StorageLifecycle:
     def _bucket_quality(self, start_ms: int, end_ms: int) -> tuple[bool, str, int]:
         coverage_epoch_ms = self.store.get_meta_int("coverage_epoch_ms")
         gaps = self.store.gaps_overlapping(self.coin, start_ms, end_ms)
-        complete = (
-            coverage_epoch_ms is not None
-            and coverage_epoch_ms <= start_ms
-            and len(gaps) == 0
-        )
-        quality = "COMPLETE" if complete else ("GAPPED" if gaps else "PARTIAL_HISTORY")
-        return complete, quality, len(gaps)
+        history_ready = coverage_epoch_ms is not None and coverage_epoch_ms <= start_ms
+        if not history_ready:
+            return False, "PARTIAL_HISTORY", len(gaps)
+
+        integrity = summarize_unresolved_gaps(gaps, start_ms=start_ms, end_ms=end_ms)["spot_integrity"]
+        complete = integrity == "COMPLETE"
+        return complete, integrity, len(gaps)
 
     @staticmethod
     def _ceil_to_bucket(value_ms: int, bucket_ms: int) -> int:
@@ -173,7 +174,6 @@ class StorageLifecycle:
 
             status = disk["level"]
             if status == "EXTERNAL_MONITOR_REQUIRED":
-                # Do not falsely call PostgreSQL volume capacity NORMAL.
                 status = "EXTERNAL_MONITOR_REQUIRED"
 
             report = {
@@ -203,10 +203,11 @@ class StorageLifecycle:
                     "raw_compaction": "12H_RAW_PLUS_DURABLE_4H_ARCHIVE",
                     "archive_retention": "INDEFINITE",
                     "postgres_capacity_source": "RAILWAY_METRICS",
+                    "spot_integrity_policy": "HYPE_PROTOCOL_V1_1_CONTINUITY_MATERIALITY",
                     "critical_action": "ALERT_AND_REVIEW_VOLUME_OR_RETENTION",
                     "note": (
                         "Protocol-facing 24H/3D Spot Delta is reconstructed from completed "
-                        "4H archives, so raw compaction does not discard required history."
+                        "4H archives. Archive quality preserves exact COMPLETE vs MINOR_GAP vs MATERIAL_GAP semantics."
                     ),
                 },
             }
