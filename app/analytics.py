@@ -14,6 +14,8 @@ FOUR_HOURS_MS = 4 * HOUR_MS
 @dataclass(frozen=True)
 class DataQualityConfig:
     stale_after_ms: int = 60_000
+    # Retained only for backwards-compatible construction.  Protocol v1.2.1
+    # does not use coverage percentage as an automatic trading cliff.
     complete_threshold: float = 0.999
     integrity: SpotIntegrityConfig = SpotIntegrityConfig()
 
@@ -114,36 +116,40 @@ def _load_completed_4h_bucket(
         config=quality.integrity,
     )
     history_ready = coverage_epoch_ms is not None and coverage_epoch_ms <= start_ms and not archive_missing
-    exact_complete = history_ready and gap_summary["spot_integrity"] == "COMPLETE"
-    usable_for_spot_mode = (
-        history_ready
-        and coverage >= quality.complete_threshold
-        and gap_summary["spot_integrity"] in {"COMPLETE", "MINOR_GAP"}
-    )
+    continuity_status = gap_summary["continuity_status"] if history_ready else "UNKNOWN"
+    exact_complete = history_ready and continuity_status == "COMPLETE"
+    source_assessable = history_ready
 
     if archive_missing:
         quality_name = "ARCHIVE_MISSING"
     elif not history_ready:
         quality_name = "PARTIAL_HISTORY"
     else:
-        quality_name = gap_summary["spot_integrity"]
+        quality_name = continuity_status
 
     return {
         "mode": "completed_binance_aligned_utc",
         "window_start_ms": start_ms,
         "window_end_ms": end_ms,
         "coverage_ratio": round(coverage, 6),
+        "coverage_ratio_role": "diagnostic_only",
         "complete": exact_complete,
         "history_ready": history_ready,
-        "usable_for_spot_mode": usable_for_spot_mode,
+        # Compatibility alias: source/history availability only.  Final FULL vs
+        # DEGRADED Spot Mode still depends on Monitor Decision Usability.
+        "usable_for_spot_mode": source_assessable,
+        "source_assessable": source_assessable,
         "quality": quality_name,
-        "spot_integrity": gap_summary["spot_integrity"] if history_ready else "UNKNOWN",
+        "continuity_status": continuity_status,
+        "spot_integrity": continuity_status,
+        "decision_usability": "UNASSESSED" if source_assessable else "UNKNOWN",
+        "decision_usability_owner": "monitor",
         "unresolved_gap_count": len(gaps),
         "independent_gap_count": gap_summary["independent_gap_count"],
         "unresolved_gap_duration_ms": gap_summary["unresolved_gap_duration_ms"],
         "max_unresolved_gap_ms": gap_summary["max_unresolved_gap_ms"],
-        "minor_gap_thresholds": gap_summary["minor_gap_thresholds"],
-        "monitor_material_event_override_required": gap_summary["spot_integrity"] == "MINOR_GAP",
+        "gap_diagnostics": gap_summary["gap_diagnostics"],
+        "fixed_cliff_thresholds_applied": False,
         "archive_source": "materialized_4h" if archived is not None else ("raw_fallback" if not archive_missing else "missing"),
         **stats,
     }
@@ -157,17 +163,24 @@ def _build_window_from_buckets(buckets: list[dict[str, Any]], *, label: str) -> 
             "window_start_ms": None,
             "window_end_ms": None,
             "coverage_ratio": 0.0,
+            "coverage_ratio_role": "diagnostic_only",
             "complete": False,
             "history_ready": False,
             "usable_for_spot_mode": False,
+            "source_assessable": False,
             "quality": "PARTIAL_HISTORY",
+            "continuity_status": "UNKNOWN",
             "spot_integrity": "UNKNOWN",
+            "decision_usability": "UNKNOWN",
+            "decision_usability_owner": "monitor",
             "unresolved_gap_count": 0,
             "independent_gap_count": 0,
             "unresolved_gap_duration_ms": 0,
             "max_unresolved_gap_ms": 0,
-            "minor_gap_bucket_count": 0,
-            "repeated_minor_gap_review_required": False,
+            "gap_bucket_count": 0,
+            "repeated_gap_review_required": False,
+            "gap_diagnostics": [],
+            "fixed_cliff_thresholds_applied": False,
             **stats,
         }
 
@@ -179,46 +192,56 @@ def _build_window_from_buckets(buckets: list[dict[str, Any]], *, label: str) -> 
     )
     history_ready = all(bool(bucket["history_ready"]) for bucket in buckets)
     exact_complete = all(bool(bucket["complete"]) for bucket in buckets)
-    minor_gap_bucket_count = sum(bucket["spot_integrity"] == "MINOR_GAP" for bucket in buckets)
-    material_gap_present = any(bucket["spot_integrity"] == "MATERIAL_GAP" for bucket in buckets)
+    archive_missing = any(bucket["quality"] == "ARCHIVE_MISSING" for bucket in buckets)
+    gap_bucket_count = sum(bucket["continuity_status"] == "UNRESOLVED_GAP" for bucket in buckets)
 
-    if any(bucket["quality"] == "ARCHIVE_MISSING" for bucket in buckets):
+    if archive_missing:
         quality_name = "ARCHIVE_MISSING"
-        integrity_name = "UNKNOWN"
+        continuity_status = "UNKNOWN"
     elif not history_ready:
         quality_name = "PARTIAL_HISTORY"
-        integrity_name = "UNKNOWN"
-    elif material_gap_present:
-        quality_name = "MATERIAL_GAP"
-        integrity_name = "MATERIAL_GAP"
-    elif minor_gap_bucket_count:
-        quality_name = "MINOR_GAP"
-        integrity_name = "MINOR_GAP"
+        continuity_status = "UNKNOWN"
+    elif gap_bucket_count:
+        quality_name = "UNRESOLVED_GAP"
+        continuity_status = "UNRESOLVED_GAP"
     else:
         quality_name = "COMPLETE"
-        integrity_name = "COMPLETE"
+        continuity_status = "COMPLETE"
 
-    usable_for_spot_mode = history_ready and not material_gap_present and all(
-        bool(bucket["usable_for_spot_mode"]) for bucket in buckets
-    )
+    source_assessable = history_ready and not archive_missing
+    gap_diagnostics: list[dict[str, Any]] = []
+    seen: set[tuple[int, int, str | None]] = set()
+    for bucket in buckets:
+        for gap in bucket.get("gap_diagnostics", []):
+            key = (int(gap["start_ms"]), int(gap["end_ms"]), gap.get("reason"))
+            if key in seen:
+                continue
+            seen.add(key)
+            gap_diagnostics.append(dict(gap))
 
     return {
         "mode": "rolling_completed_4h_bins",
         "window_start_ms": buckets[0]["window_start_ms"],
         "window_end_ms": buckets[-1]["window_end_ms"],
         "coverage_ratio": round(weighted_coverage, 6),
+        "coverage_ratio_role": "diagnostic_only",
         "complete": exact_complete,
         "history_ready": history_ready,
-        "usable_for_spot_mode": usable_for_spot_mode,
+        "usable_for_spot_mode": source_assessable,
+        "source_assessable": source_assessable,
         "quality": quality_name,
-        "spot_integrity": integrity_name,
+        "continuity_status": continuity_status,
+        "spot_integrity": continuity_status,
+        "decision_usability": "UNASSESSED" if source_assessable else "UNKNOWN",
+        "decision_usability_owner": "monitor",
         "unresolved_gap_count": sum(int(bucket["unresolved_gap_count"]) for bucket in buckets),
         "independent_gap_count": sum(int(bucket["independent_gap_count"]) for bucket in buckets),
         "unresolved_gap_duration_ms": sum(int(bucket["unresolved_gap_duration_ms"]) for bucket in buckets),
         "max_unresolved_gap_ms": max(int(bucket["max_unresolved_gap_ms"]) for bucket in buckets),
-        "minor_gap_bucket_count": minor_gap_bucket_count,
-        "repeated_minor_gap_review_required": minor_gap_bucket_count > 1,
-        "monitor_material_event_override_required": minor_gap_bucket_count > 0,
+        "gap_bucket_count": gap_bucket_count,
+        "repeated_gap_review_required": gap_bucket_count > 1,
+        "gap_diagnostics": gap_diagnostics,
+        "fixed_cliff_thresholds_applied": False,
         "bucket_count": len(buckets),
         "label": label,
         **stats,
@@ -274,52 +297,62 @@ def build_spot_demand_snapshot(
     }
 
     archive_missing = any(window["quality"] == "ARCHIVE_MISSING" for window in windows.values())
-    material_gap = any(window["spot_integrity"] == "MATERIAL_GAP" for window in windows.values())
     history_ready = all(bool(window["history_ready"]) for window in windows.values())
-    spot_mode_usable = all(bool(window["usable_for_spot_mode"]) for window in windows.values())
 
-    if not connected or stale or archive_missing or material_gap:
+    # v1.2.1 deliberately does not auto-degrade on a fixed gap duration/count.
+    # This status answers whether the official source/history is available for
+    # Monitor assessment.  The Monitor then assigns ROBUST/MARGINAL/UNKNOWN to
+    # each 4H/24H/3D window and finalizes FULL vs DEGRADED Spot Mode.
+    if not connected or stale or archive_missing:
         data_quality = "DEGRADED"
-    elif history_ready and spot_mode_usable:
+    elif history_ready:
         data_quality = "FULL"
     else:
         data_quality = "WARMING_UP"
 
-    minor_present = any(window["spot_integrity"] == "MINOR_GAP" for window in windows.values())
-    repeated_minor_review = bool(windows["3d"].get("repeated_minor_gap_review_required"))
+    windows_with_gaps = [
+        label for label, window in windows.items()
+        if window["continuity_status"] == "UNRESOLVED_GAP"
+    ]
+    repeated_gap_review = bool(windows["3d"].get("repeated_gap_review_required"))
 
     return {
         "source": "hyperliquid_official",
         "market": "HYPE/USDC",
         "coin": coin,
-        "protocol_version": "1.1",
+        "protocol_version": "1.2.1",
         "generated_at_ms": now_ms,
         "data_quality": data_quality,
+        "data_quality_scope": "collector_source_and_history_readiness",
         "full_spot_mode_ready": data_quality == "FULL",
-        "spot_integrity": windows["3d"]["spot_integrity"] if history_ready else "UNKNOWN",
+        "full_spot_mode_ready_scope": "source_level_only_monitor_must_finalize_window_usability",
+        "spot_integrity": windows["3d"]["continuity_status"] if history_ready else "UNKNOWN",
+        "continuity_status": windows["3d"]["continuity_status"] if history_ready else "UNKNOWN",
         "monitor_review": {
-            "signal_robustness_required": minor_present,
-            "material_event_override_required": minor_present,
-            "repeated_minor_gap_review_required": repeated_minor_review,
+            "decision_usability_required": history_ready,
+            "decision_usability_values": ["ROBUST", "MARGINAL", "UNKNOWN"],
+            "windows_with_unresolved_gaps": windows_with_gaps,
+            "repeated_continuity_review_required": repeated_gap_review,
+            "fixed_cliff_thresholds_applied": False,
             "note": (
-                "Collector classifies quantitative continuity only. The Monitor must override MINOR_GAP "
-                "to MATERIAL_GAP when severe market/protocol context or systematic continuity instability makes the gap material."
+                "Collector reports engineering continuity and observed trades only. The Monitor must classify each "
+                "4H/24H/3D window as ROBUST/MARGINAL/UNKNOWN using gap diagnostics, turnover, price/volatility, "
+                "multi-window direction and material-event context. A gap does not automatically degrade all windows."
             ),
         },
         "coverage_policy": {
             "basis": "persistent_coverage_epoch_minus_unresolved_gaps",
+            "coverage_ratio_role": "diagnostic_only_not_a_trading_cliff",
             "gap_recovery_enabled": True,
             "recovery_method": "official recentTrades with strict overlap proof and bounded retry",
             "raw_storage": "short_retention",
             "historical_storage": "durable_completed_4h_aggregates",
-            "continuity_materiality": "protocol_v1.1",
-            "minor_gap_single_ms": quality.integrity.max_single_gap_ms,
-            "minor_gap_total_4h_ms": quality.integrity.max_total_gap_ms,
-            "minor_gap_count_4h": quality.integrity.max_gap_count,
+            "continuity_materiality": "protocol_v1.2.1_window_specific_monitor_assessment",
+            "fixed_gap_cliff_thresholds": "disabled",
             "missing_trade_policy": "never_fill_or_assume_zero",
             "note": (
                 "24H and 3D protocol windows are rolling sums of the latest 6 and 18 completed Binance-aligned 4H buckets. "
-                "UNRESOLVED is an engineering fact; only MATERIAL_GAP automatically degrades trading usability."
+                "Gap duration/count remain engineering evidence; they do not independently determine trading usability."
             ),
         },
         "collector": {
@@ -340,7 +373,8 @@ def build_spot_demand_snapshot(
         "windows": windows,
         "recent_4h": recent_with_cvd,
         "cvd_direction_hint": (
-            "Monitor should evaluate recent_4h[].cumulative_delta_usdc together with Binance HYPE price structure for direction/divergence. "
-            "When MINOR_GAP exists, apply Protocol v1.1 Signal Robustness Rule before Grade A."
+            "Monitor should evaluate recent_4h[].cumulative_delta_usdc with Binance HYPE price structure. "
+            "Protocol v1.2.1 treats 3D as persistence/background, 24H as primary Spot direction and 4H as inflection/timing; "
+            "final Decision Usability is ROBUST/MARGINAL/UNKNOWN and is not assigned by the Collector."
         ),
     }
