@@ -81,9 +81,11 @@ def test_full_after_more_than_72h_continuous_current_process(tmp_path):
     now = 1_800_000_000_000
     store, started = seeded_full_history(tmp_path, now=now)
     snap = build_spot_demand_snapshot(store, state(started=started), now_ms=now)
+    assert snap["protocol_version"] == "1.2.1"
     assert snap["data_quality"] == "FULL"
     assert snap["full_spot_mode_ready"] is True
     assert all(w["complete"] for w in snap["windows"].values())
+    assert all(w["decision_usability"] == "UNASSESSED" for w in snap["windows"].values())
     store.close()
 
 
@@ -102,42 +104,31 @@ def test_redeploy_initializes_persistent_coverage_epoch_at_current_start(tmp_pat
     store.close()
 
 
-def test_minor_gap_remains_unresolved_but_allows_full_spot_mode(tmp_path):
+def test_unresolved_gap_is_engineering_fact_not_fixed_cliff(tmp_path):
     now = 1_800_000_000_000
     store, started = seeded_full_history(tmp_path, now=now)
     gap_start = now - 2 * HOUR_MS
-    gap_end = gap_start + 1_583
-    store.add_gap("@107", gap_start, gap_end, status="UNRESOLVED", reason="short_reconnect")
+    gap_end = gap_start + 6_000
+    store.add_gap("@107", gap_start, gap_end, status="UNRESOLVED", reason="reconnect")
 
     snap = build_spot_demand_snapshot(store, state(started=started, reconnects=1), now_ms=now)
     four = snap["windows"]["4h"]
     assert snap["collector"]["unresolved_gaps"] == 1
     assert four["complete"] is False
-    assert four["spot_integrity"] == "MINOR_GAP"
-    assert four["unresolved_gap_duration_ms"] == 1_583
+    assert four["continuity_status"] == "UNRESOLVED_GAP"
+    assert four["unresolved_gap_duration_ms"] == 6_000
     assert four["usable_for_spot_mode"] is True
+    assert four["decision_usability"] == "UNASSESSED"
+    assert four["fixed_cliff_thresholds_applied"] is False
+    assert len(four["gap_diagnostics"]) == 1
     assert snap["data_quality"] == "FULL"
     assert snap["full_spot_mode_ready"] is True
-    assert snap["monitor_review"]["signal_robustness_required"] is True
-    assert snap["monitor_review"]["material_event_override_required"] is True
+    assert snap["monitor_review"]["decision_usability_required"] is True
+    assert "4h" in snap["monitor_review"]["windows_with_unresolved_gaps"]
     store.close()
 
 
-def test_material_gap_degrades_even_with_full_history(tmp_path):
-    now = 1_800_000_000_000
-    store, started = seeded_full_history(tmp_path, now=now)
-    gap_start = now - 2 * HOUR_MS
-    store.add_gap("@107", gap_start, gap_start + 6_000, status="UNRESOLVED", reason="long_reconnect")
-
-    snap = build_spot_demand_snapshot(store, state(started=started, reconnects=1), now_ms=now)
-    assert snap["windows"]["4h"]["spot_integrity"] == "MATERIAL_GAP"
-    assert snap["windows"]["4h"]["usable_for_spot_mode"] is False
-    assert snap["data_quality"] == "DEGRADED"
-    assert snap["full_spot_mode_ready"] is False
-    store.close()
-
-
-def test_three_independent_micro_gaps_in_one_4h_are_material(tmp_path):
+def test_three_micro_gaps_do_not_auto_degrade(tmp_path):
     now = 1_800_000_000_000
     store, started = seeded_full_history(tmp_path, now=now)
     base = now - 2 * HOUR_MS
@@ -148,22 +139,27 @@ def test_three_independent_micro_gaps_in_one_4h_are_material(tmp_path):
     snap = build_spot_demand_snapshot(store, state(started=started, reconnects=3), now_ms=now)
     four = snap["windows"]["4h"]
     assert four["independent_gap_count"] == 3
-    assert four["spot_integrity"] == "MATERIAL_GAP"
-    assert snap["data_quality"] == "DEGRADED"
+    assert four["continuity_status"] == "UNRESOLVED_GAP"
+    assert four["decision_usability"] == "UNASSESSED"
+    assert snap["data_quality"] == "FULL"
+    assert snap["monitor_review"]["fixed_cliff_thresholds_applied"] is False
     store.close()
 
 
-def test_minor_gaps_across_multiple_4h_buckets_require_monitor_review_not_auto_degrade(tmp_path):
+def test_gaps_across_multiple_buckets_preserve_window_independence(tmp_path):
     now = 1_800_000_000_000
     store, started = seeded_full_history(tmp_path, now=now)
     latest_end = (now // FOUR_HOURS_MS) * FOUR_HOURS_MS
-    store.add_gap("@107", latest_end - HOUR_MS, latest_end - HOUR_MS + 1_000, status="UNRESOLVED", reason="minor-1")
-    store.add_gap("@107", latest_end - 5 * HOUR_MS, latest_end - 5 * HOUR_MS + 1_000, status="UNRESOLVED", reason="minor-2")
+    store.add_gap("@107", latest_end - HOUR_MS, latest_end - HOUR_MS + 1_000, status="UNRESOLVED", reason="gap-1")
+    store.add_gap("@107", latest_end - 5 * HOUR_MS, latest_end - 5 * HOUR_MS + 1_000, status="UNRESOLVED", reason="gap-2")
 
     snap = build_spot_demand_snapshot(store, state(started=started, reconnects=2), now_ms=now)
-    assert snap["windows"]["24h"]["spot_integrity"] == "MINOR_GAP"
-    assert snap["windows"]["24h"]["repeated_minor_gap_review_required"] is True
-    assert snap["monitor_review"]["repeated_minor_gap_review_required"] is True
+    assert snap["windows"]["4h"]["continuity_status"] == "UNRESOLVED_GAP"
+    assert snap["windows"]["24h"]["continuity_status"] == "UNRESOLVED_GAP"
+    assert snap["windows"]["24h"]["repeated_gap_review_required"] is True
+    assert snap["windows"]["24h"]["decision_usability"] == "UNASSESSED"
+    assert snap["windows"]["3d"]["decision_usability"] == "UNASSESSED"
+    assert snap["monitor_review"]["repeated_continuity_review_required"] is True
     assert snap["data_quality"] == "FULL"
     store.close()
 
