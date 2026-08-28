@@ -21,7 +21,9 @@ class StorageLifecycleConfig:
     # reconnect diagnostics, and short-horizon forensic work. Protocol-facing
     # 24H/3D history is reconstructed from durable completed 4H aggregates.
     raw_retention_hours: int = 12
-    gap_retention_days: int = 90
+    # Protocol v1.2.1 requires known continuity gaps to remain engineering facts.
+    # None means indefinite retention (production default).
+    gap_retention_days: int | None = None
     warning_ratio: float = 0.80
     critical_ratio: float = 0.95
 
@@ -54,9 +56,9 @@ class StorageLifecycle:
         if not history_ready:
             return False, "PARTIAL_HISTORY", len(gaps)
 
-        integrity = summarize_unresolved_gaps(gaps, start_ms=start_ms, end_ms=end_ms)["spot_integrity"]
-        complete = integrity == "COMPLETE"
-        return complete, integrity, len(gaps)
+        continuity = summarize_unresolved_gaps(gaps, start_ms=start_ms, end_ms=end_ms)["continuity_status"]
+        complete = continuity == "COMPLETE"
+        return complete, continuity, len(gaps)
 
     @staticmethod
     def _ceil_to_bucket(value_ms: int, bucket_ms: int) -> int:
@@ -151,7 +153,11 @@ class StorageLifecycle:
     def run_once(self, *, now_ms: int | None = None) -> dict[str, Any]:
         now_ms = int(time.time() * 1000) if now_ms is None else now_ms
         raw_cutoff_ms = now_ms - self.config.raw_retention_hours * HOUR_MS
-        gap_cutoff_ms = now_ms - self.config.gap_retention_days * DAY_MS
+        gap_cutoff_ms = (
+            None
+            if self.config.gap_retention_days is None
+            else now_ms - self.config.gap_retention_days * DAY_MS
+        )
 
         with self._lock:
             previous_raw_waterline_ms = self.store.get_meta_int("raw_purged_before_ms")
@@ -168,7 +174,11 @@ class StorageLifecycle:
             raw_waterline_ms = max(previous_raw_waterline_ms or 0, raw_cutoff_ms)
             self.store.set_meta("raw_purged_before_ms", raw_waterline_ms)
 
-            purged_gaps = self.store.delete_gaps_before(gap_cutoff_ms, coin=self.coin)
+            if gap_cutoff_ms is None:
+                purged_gaps = 0
+            else:
+                purged_gaps = self.store.delete_gaps_before(gap_cutoff_ms, coin=self.coin)
+
             wal_checkpoint = self.store.checkpoint_wal()
             disk = self._disk_status()
 
@@ -202,12 +212,14 @@ class StorageLifecycle:
                 "policy": {
                     "raw_compaction": "12H_RAW_PLUS_DURABLE_4H_ARCHIVE",
                     "archive_retention": "INDEFINITE",
+                    "gap_metadata_retention": "INDEFINITE" if self.config.gap_retention_days is None else f"{self.config.gap_retention_days}D",
                     "postgres_capacity_source": "RAILWAY_METRICS",
-                    "spot_integrity_policy": "HYPE_PROTOCOL_V1_1_CONTINUITY_MATERIALITY",
+                    "spot_integrity_policy": "HYPE_PROTOCOL_V1_2_1_WINDOW_SPECIFIC_MATERIALITY",
                     "critical_action": "ALERT_AND_REVIEW_VOLUME_OR_RETENTION",
                     "note": (
-                        "Protocol-facing 24H/3D Spot Delta is reconstructed from completed "
-                        "4H archives. Archive quality preserves exact COMPLETE vs MINOR_GAP vs MATERIAL_GAP semantics."
+                        "Protocol-facing 24H/3D Spot Delta is reconstructed from completed 4H archives. "
+                        "Known continuity gaps remain durable engineering facts; gap duration/count do not independently "
+                        "assign ROBUST/MARGINAL/UNKNOWN Decision Usability."
                     ),
                 },
             }
