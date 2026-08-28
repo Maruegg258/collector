@@ -32,7 +32,8 @@ HYPERLIQUID_WS_URL = os.getenv("HYPERLIQUID_WS_URL", "wss://api.hyperliquid.xyz/
 SUMMARY_INTERVAL_SECONDS = max(30, int(os.getenv("SUMMARY_INTERVAL_SECONDS", "60")))
 STORAGE_MAINTENANCE_INTERVAL_SECONDS = max(300, int(os.getenv("STORAGE_MAINTENANCE_INTERVAL_SECONDS", "3600")))
 RAW_RETENTION_HOURS = max(8, int(os.getenv("RAW_RETENTION_HOURS", "12")))
-GAP_RETENTION_DAYS = max(7, int(os.getenv("GAP_RETENTION_DAYS", "90")))
+# Protocol v1.2.1 keeps continuity-gap metadata as durable engineering facts.
+GAP_RETENTION_DAYS: int | None = None
 VOLUME_WARNING_RATIO = float(os.getenv("VOLUME_WARNING_RATIO", "0.80"))
 VOLUME_CRITICAL_RATIO = float(os.getenv("VOLUME_CRITICAL_RATIO", "0.95"))
 READINESS_MAX_MESSAGE_AGE_MS = max(10_000, int(os.getenv("READINESS_MAX_MESSAGE_AGE_MS", "30000")))
@@ -96,7 +97,7 @@ async def periodic_storage_maintenance() -> None:
             report = await asyncio.to_thread(lifecycle.run_once)
             logger.info(
                 "storage_maintenance status=%s backend=%s raw=%s->%s purged=%s "
-                "aggregate_4h=%s raw_hours=%s",
+                "aggregate_4h=%s raw_hours=%s gap_retention=%s",
                 report["status"],
                 STORAGE_BACKEND,
                 report["raw_trades_before"],
@@ -104,6 +105,7 @@ async def periodic_storage_maintenance() -> None:
                 report["purged_raw_trades"],
                 report["aggregate_4h_total"],
                 report["raw_retention_hours"],
+                report["policy"]["gap_metadata_retention"],
             )
         except asyncio.CancelledError:
             raise
@@ -138,7 +140,7 @@ async def lifespan(_: FastAPI):
             lease.close()
 
 
-app = FastAPI(title="HYPE Spot Collector", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="HYPE Spot Collector", version="1.2.1", lifespan=lifespan)
 
 
 def _readiness_snapshot() -> tuple[bool, dict]:
@@ -174,7 +176,8 @@ def health() -> dict:
     return {
         "status": "ok" if state["connected"] else "degraded",
         "service": "hype-spot-collector",
-        "version": "1.0.0",
+        "version": "1.2.1",
+        "protocol_compatibility": "HYPE_SWING_LONG_PROTOCOL_v1.2.1",
         "time": datetime.now(timezone.utc).isoformat(),
         "storage_backend": STORAGE_BACKEND,
         "collector": state,
