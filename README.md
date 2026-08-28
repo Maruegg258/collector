@@ -4,7 +4,7 @@ Production HYPE/USDC Spot demand collector for `HYPE_SWING_LONG_PROTOCOL.md`.
 
 ## Purpose
 
-This service supplies the Protocol's **Hyperliquid official HYPE/USDC Spot Demand** layer. It does not replace Binance derivatives data, ETF flow, or market-regime inputs.
+This service supplies the Protocol's **Hyperliquid official HYPE/USDC Spot Demand** layer. It does not replace Binance derivatives data, ETF flow, market-regime inputs, or the Monitor's final trading interpretation.
 
 ## Production data path
 
@@ -28,24 +28,44 @@ The monitor evaluates completed Binance-aligned UTC 4H boundaries.
 
 Raw trades are retained for **12 hours by default** for current-bucket calculation, reconnect recovery and diagnostics. Completed 4H aggregates are retained indefinitely, so 24H/3D Protocol history does not depend on retaining every raw trade for days.
 
-## Data quality — Protocol v1.1
+Known continuity-gap metadata is also retained **indefinitely by default**. A gap remains an engineering fact even when the Monitor later concludes that it does not materially change the medium-term direction.
 
-`/hype/spot-demand` separates engineering continuity from trading usability:
+## Data quality — Protocol v1.2.1
 
-- `spot_integrity`: `COMPLETE`, `MINOR_GAP`, `MATERIAL_GAP`, or `UNKNOWN`
-- `data_quality`: `FULL`, `WARMING_UP`, or `DEGRADED`
-- `full_spot_mode_ready`
-- per-window coverage, unresolved duration and independent-gap counts
-- `usable_for_spot_mode`, distinct from strict `complete`
-- Monitor review flags for Signal Robustness / Material Event context
+`/hype/spot-demand` deliberately separates three concepts:
+
+1. **Source/history readiness** — whether official trades are currently available and the required completed-window history exists.
+2. **Engineering continuity** — whether a window is `COMPLETE` or contains an `UNRESOLVED_GAP`.
+3. **Decision Usability** — the Monitor's final `ROBUST`, `MARGINAL`, or `UNKNOWN` classification for each 4H/24H/3D window.
+
+The Collector does **not** assign final Decision Usability. It provides the observed facts needed by the Monitor:
+
+- 4H / 24H / 3D Spot notional delta
+- base delta, total notional and delta ratio
+- latest 18 completed 4H buckets and cumulative delta
+- per-window coverage ratio as a diagnostic only
+- unresolved gap count, total duration and maximum duration
+- per-gap start/end/duration/reason/recovery diagnostics
 - archive source (`materialized_4h`, `raw_fallback`, or `missing`)
 - collector freshness and reconnect/recovery counters
 
-Quantitative MINOR_GAP limits are intentionally conservative: one unresolved interval must be <=5s, total unresolved duration per completed 4H <=10s, and no more than two independent gaps per completed 4H. MINOR_GAP remains UNRESOLVED and missing trades are never filled or assumed zero, but it does not automatically block FULL SPOT MODE. MATERIAL_GAP, stale/disconnected official data, or missing required archive data does degrade trading usability.
+### No fixed gap cliff
 
-The Collector only classifies quantitative continuity. The HYPE Monitor must still override a MINOR_GAP to MATERIAL when severe market/protocol context or systematic repeated instability makes the missing interval materially important.
+Protocol v1.2.1 removes the old v1.1 rule where 5 seconds / 10 seconds / 2 gaps automatically separated `MINOR_GAP` from `MATERIAL_GAP`.
 
-Gap recovery uses Hyperliquid official `recentTrades` with strict overlap proof and bounded retries. Unresolved gaps remain explicit.
+Gap duration and frequency remain important evidence, but the Collector no longer converts them into an automatic trading verdict. A 4H gap therefore does not automatically invalidate 24H or 3D. The Monitor evaluates each window independently using:
+
+- gap diagnostics
+- observed turnover and delta margin
+- Binance price / volatility context
+- multi-window direction consistency
+- material market/protocol event context
+
+Missing trades are never filled, imputed or assumed to be zero.
+
+`full_spot_mode_ready` is therefore a **source-level readiness** flag only. The Monitor must still finalize 4H/24H/3D Decision Usability and apply the Protocol's FULL / DEGRADED Spot Mode rules.
+
+Gap recovery continues to use Hyperliquid official `recentTrades` with strict overlap proof and bounded retries. Unresolved gaps remain explicit.
 
 ## Reliability
 
@@ -58,13 +78,15 @@ Gap recovery uses Hyperliquid official `recentTrades` with strict overlap proof 
 ## Endpoints
 
 - `/readiness` — Railway readiness gate
-- `/health` — runtime diagnostics
+- `/health` — runtime diagnostics and Protocol compatibility version
 - `/hype/spot-demand` — Protocol-facing Spot Demand snapshot
-- `/storage/status` — compaction/archive status
+- `/storage/status` — compaction/archive/retention status
 
 ## Storage capacity
 
 The stateless Collector cannot inspect the Postgres service volume directly. PostgreSQL disk capacity must be monitored through Railway metrics. `/storage/status` therefore reports `EXTERNAL_MONITOR_REQUIRED` rather than falsely labelling Postgres disk usage `NORMAL`.
+
+Raw trades remain short-retention; completed 4H aggregates and gap metadata are compact and durable. This preserves Protocol history without storing every raw trade indefinitely.
 
 ## Legacy migration utilities
 
