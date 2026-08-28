@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import namedtuple
 
-from app.lifecycle import FOUR_HOURS_MS, HOUR_MS, StorageLifecycle, StorageLifecycleConfig
+from app.lifecycle import DAY_MS, FOUR_HOURS_MS, HOUR_MS, StorageLifecycle, StorageLifecycleConfig
 from app.storage import TradeRecord
 from app.storage_factory import SQLiteTradeStore as TradeStore
 
@@ -29,21 +29,7 @@ def test_materializes_completed_4h_bucket(tmp_path):
     store.close()
 
 
-def test_minor_gap_archives_bucket_as_minor_gap_not_complete(tmp_path):
-    store = TradeStore(str(tmp_path / "test.sqlite3"))
-    now = 1_800_000_000_000
-    start = ((now // FOUR_HOURS_MS) - 1) * FOUR_HOURS_MS
-    store.set_meta("coverage_epoch_ms", start - 1)
-    add_trade(store, t=start + 1_000, side="B", tid=1)
-    store.add_gap("@107", start + 10_000, start + 11_583, status="UNRESOLVED", reason="test")
-    StorageLifecycle(store).run_once(now_ms=now)
-    bucket = store.get_aggregate_bucket("@107", "4h", start)
-    assert bucket["quality"] == "MINOR_GAP"
-    assert bucket["complete"] == 0
-    store.close()
-
-
-def test_material_gap_archives_bucket_as_material_gap(tmp_path):
+def test_unresolved_gap_archives_as_engineering_gap_without_cliff(tmp_path):
     store = TradeStore(str(tmp_path / "test.sqlite3"))
     now = 1_800_000_000_000
     start = ((now // FOUR_HOURS_MS) - 1) * FOUR_HOURS_MS
@@ -52,7 +38,7 @@ def test_material_gap_archives_bucket_as_material_gap(tmp_path):
     store.add_gap("@107", start + 10_000, start + 16_000, status="UNRESOLVED", reason="test")
     StorageLifecycle(store).run_once(now_ms=now)
     bucket = store.get_aggregate_bucket("@107", "4h", start)
-    assert bucket["quality"] == "MATERIAL_GAP"
+    assert bucket["quality"] == "UNRESOLVED_GAP"
     assert bucket["complete"] == 0
     store.close()
 
@@ -93,6 +79,23 @@ def test_purged_boundary_bucket_not_overwritten_by_partial_raw(tmp_path):
     store.close()
 
 
+def test_gap_metadata_is_retained_indefinitely_by_default(tmp_path):
+    store = TradeStore(str(tmp_path / "test.sqlite3"))
+    now = 1_800_000_000_000
+    recent_time = now - HOUR_MS
+    store.set_meta("coverage_epoch_ms", now - 120 * DAY_MS)
+    add_trade(store, t=recent_time, side="B", tid=1)
+    old_gap_start = now - 100 * DAY_MS
+    store.add_gap("@107", old_gap_start, old_gap_start + 5_000, status="UNRESOLVED", reason="old-gap")
+
+    report = StorageLifecycle(store).run_once(now_ms=now)
+    assert report["gap_cutoff_ms"] is None
+    assert report["purged_gap_records"] == 0
+    assert report["policy"]["gap_metadata_retention"] == "INDEFINITE"
+    assert store.unresolved_gap_count("@107") == 1
+    store.close()
+
+
 def test_postgres_capacity_not_falsely_reported_normal(tmp_path):
     store = TradeStore(str(tmp_path / "test.sqlite3"))
     lifecycle = StorageLifecycle(store)
@@ -110,5 +113,6 @@ def test_disk_guardrail_levels(monkeypatch, tmp_path):
     report = lifecycle.run_once(now_ms=1_800_000_000_001)
     assert report["status"] == "CRITICAL"
     assert report["policy"]["raw_compaction"] == "12H_RAW_PLUS_DURABLE_4H_ARCHIVE"
-    assert report["policy"]["spot_integrity_policy"] == "HYPE_PROTOCOL_V1_1_CONTINUITY_MATERIALITY"
+    assert report["policy"]["spot_integrity_policy"] == "HYPE_PROTOCOL_V1_2_1_WINDOW_SPECIFIC_MATERIALITY"
+    assert report["policy"]["gap_metadata_retention"] == "INDEFINITE"
     store.close()
