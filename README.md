@@ -37,7 +37,7 @@ Known continuity-gap metadata is also retained **indefinitely by default**. A ga
 The response includes:
 
 - `schema_version = HYPE-SPOT-PAYLOAD-v1`
-- `collector_interface_version`
+- `collector_interface_version` (production currently `1.2.3`)
 - `completed_4h_end_ms`
 - `payload_generated_at_ms`
 - `query_mode`
@@ -53,6 +53,32 @@ For deterministic audit/replay, a completed historical boundary may be requested
 The requested value must be a completed Binance-aligned UTC 4H boundary. The service reconstructs the response from the existing raw/aggregate storage path; it does **not** create a per-run payload snapshot table.
 
 `payload_persistence = read_only_computed_no_snapshot_storage` makes this contract explicit. This preserves the original lifecycle design: raw trades remain short-retention, completed 4H aggregates remain compact and durable, and API hardening does not introduce unbounded duplicate storage.
+
+### ChatGPT / automation transport fallback — Protocol v1.3.1
+
+The canonical HTTP response body remains the first-choice transport. Some ChatGPT execution environments can issue the HTTP request but cannot surface an arbitrary Railway JSON response body to the Monitor. Protocol v1.3.1 therefore adds transport-only fallbacks without creating a second Spot engine.
+
+**Primary ChatGPT-compatible fallback:** GitHub Actions workflow `HYPE Monitor Payload Proxy`.
+
+- Transport marker: `HYPE-PAYLOAD-PROXY-v1`
+- Job-log prefix: `HYPE_PAYLOAD_PROXY_V1`
+- Schedule: UTC completed-4H boundary +2 minutes and +7 minutes; `workflow_dispatch` is also available for diagnostics
+- The workflow calls the same production `/readiness` and exact-boundary `/hype/spot-demand` endpoint
+- It validates schema, official `@107` source, requested/returned boundary and `boundary_match=true`
+- It prints only the compact Monitor-required facts to the Actions job log
+- It does **not** recalculate Delta/CVD, assign ROBUST/MARGINAL/UNKNOWN, store raw trades, or become a second database
+
+**Secondary observability fallback:** Collector structured application log `HYPE-MONITOR-LOG-v1`.
+
+`app.main` mirrors the already-built canonical payload as a single-line `monitor_payload` for completed boundaries and API requests. This path is useful only when the Railway connector can surface application stdout; HTTP 200 or `collector_summary` alone is never enough to claim payload validation.
+
+Formal acquisition priority:
+
+`canonical HTTP body -> exact-boundary HYPE-PAYLOAD-PROXY-v1 job log -> HYPE-MONITOR-LOG-v1 if surfaced -> explicit acquisition downgrade`
+
+Both fallback transports are **single-producer mirrors**. `_spot_demand_payload()` remains the only canonical payload producer.
+
+For 24H/3D aggregate windows, `archive_source` may be absent at the aggregate object level. Durable provenance is validated with `history_ready=true` plus the underlying `recent_4h` bucket `archive_source` values; a null aggregate display field is not automatically equivalent to archive data being missing.
 
 ## Data quality — Protocol v1.2.1+
 
@@ -70,7 +96,7 @@ The Collector does **not** assign final Decision Usability. It provides the obse
 - per-window coverage ratio as a diagnostic only
 - unresolved gap count, total duration and maximum duration
 - per-gap start/end/duration/reason/recovery diagnostics
-- archive source (`materialized_4h`, `raw_fallback`, or `missing`)
+- archive source (`materialized_4h`, `raw_fallback`, or `missing`) at completed 4H bucket level
 - collector freshness and reconnect/recovery counters
 
 ### No fixed gap cliff
@@ -97,7 +123,7 @@ Gap recovery continues to use Hyperliquid official `recentTrades` with strict ov
 - PostgreSQL-backed deployment lease for zero-downtime Railway handoff
 - PostgreSQL operation reconnect + one idempotent retry on connection loss
 - `/readiness` requires WebSocket connected, database reachable and fresh messages
-- GitHub Actions: unit tests, PostgreSQL storage contract, Hyperliquid live smoke
+- GitHub Actions: unit tests, PostgreSQL storage contract, Hyperliquid live smoke, exact-boundary Monitor payload transport proxy
 
 ## Endpoints
 
