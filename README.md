@@ -30,7 +30,31 @@ Raw trades are retained for **12 hours by default** for current-bucket calculati
 
 Known continuity-gap metadata is also retained **indefinitely by default**. A gap remains an engineering fact even when the Monitor later concludes that it does not materially change the medium-term direction.
 
-## Data quality — Protocol v1.2.1
+## Monitor acquisition contract
+
+`/hype/spot-demand` is the canonical read-only Monitor interface.
+
+The response includes:
+
+- `schema_version = HYPE-SPOT-PAYLOAD-v1`
+- `collector_interface_version`
+- `completed_4h_end_ms`
+- `payload_generated_at_ms`
+- `query_mode`
+- `boundary_match`
+- the existing 4H / 24H / 3D Delta, ratio, CVD and continuity diagnostics
+
+The Monitor should first check `/readiness`, then request `/hype/spot-demand`, and verify the returned completed-4H boundary before using the payload in a Protocol decision.
+
+For deterministic audit/replay, a completed historical boundary may be requested with:
+
+`/hype/spot-demand?completed_4h_end_ms=<UTC_4H_BOUNDARY_MS>`
+
+The requested value must be a completed Binance-aligned UTC 4H boundary. The service reconstructs the response from the existing raw/aggregate storage path; it does **not** create a per-run payload snapshot table.
+
+`payload_persistence = read_only_computed_no_snapshot_storage` makes this contract explicit. This preserves the original lifecycle design: raw trades remain short-retention, completed 4H aggregates remain compact and durable, and API hardening does not introduce unbounded duplicate storage.
+
+## Data quality — Protocol v1.2.1+
 
 `/hype/spot-demand` deliberately separates three concepts:
 
@@ -78,8 +102,8 @@ Gap recovery continues to use Hyperliquid official `recentTrades` with strict ov
 ## Endpoints
 
 - `/readiness` — Railway readiness gate
-- `/health` — runtime diagnostics and Protocol compatibility version
-- `/hype/spot-demand` — Protocol-facing Spot Demand snapshot
+- `/health` — runtime diagnostics, interface version and payload schema
+- `/hype/spot-demand` — Protocol-facing Spot Demand snapshot; optional historical completed-4H boundary query
 - `/storage/status` — compaction/archive/retention status
 
 ## Storage capacity
