@@ -9,7 +9,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, HTTPException, Response
 
 from .analytics import build_spot_demand_snapshot
 from .collector import HypeSpotCollector
@@ -32,11 +32,14 @@ HYPERLIQUID_WS_URL = os.getenv("HYPERLIQUID_WS_URL", "wss://api.hyperliquid.xyz/
 SUMMARY_INTERVAL_SECONDS = max(30, int(os.getenv("SUMMARY_INTERVAL_SECONDS", "60")))
 STORAGE_MAINTENANCE_INTERVAL_SECONDS = max(300, int(os.getenv("STORAGE_MAINTENANCE_INTERVAL_SECONDS", "3600")))
 RAW_RETENTION_HOURS = max(8, int(os.getenv("RAW_RETENTION_HOURS", "12")))
-# Protocol v1.2.1 keeps continuity-gap metadata as durable engineering facts.
+# Protocol v1.2.1+ keeps continuity-gap metadata as durable engineering facts.
 GAP_RETENTION_DAYS: int | None = None
 VOLUME_WARNING_RATIO = float(os.getenv("VOLUME_WARNING_RATIO", "0.80"))
 VOLUME_CRITICAL_RATIO = float(os.getenv("VOLUME_CRITICAL_RATIO", "0.95"))
 READINESS_MAX_MESSAGE_AGE_MS = max(10_000, int(os.getenv("READINESS_MAX_MESSAGE_AGE_MS", "30000")))
+FOUR_HOURS_MS = 4 * 60 * 60 * 1000
+SPOT_PAYLOAD_SCHEMA_VERSION = "HYPE-SPOT-PAYLOAD-v1"
+COLLECTOR_INTERFACE_VERSION = "1.2.2"
 
 store = create_store(backend=STORAGE_BACKEND, db_path=DB_PATH, database_url=DATABASE_URL)
 
@@ -140,7 +143,7 @@ async def lifespan(_: FastAPI):
             lease.close()
 
 
-app = FastAPI(title="HYPE Spot Collector", version="1.2.1", lifespan=lifespan)
+app = FastAPI(title="HYPE Spot Collector", version=COLLECTOR_INTERFACE_VERSION, lifespan=lifespan)
 
 
 def _readiness_snapshot() -> tuple[bool, dict]:
@@ -170,14 +173,63 @@ def _readiness_snapshot() -> tuple[bool, dict]:
     }
 
 
+def _validate_completed_4h_boundary(completed_4h_end_ms: int) -> int:
+    if completed_4h_end_ms <= 0 or completed_4h_end_ms % FOUR_HOURS_MS != 0:
+        raise HTTPException(
+            status_code=400,
+            detail="completed_4h_end_ms must be a positive Binance-aligned UTC 4H boundary in milliseconds",
+        )
+    latest_completed_4h_end_ms = (int(time.time() * 1000) // FOUR_HOURS_MS) * FOUR_HOURS_MS
+    if completed_4h_end_ms > latest_completed_4h_end_ms:
+        raise HTTPException(
+            status_code=400,
+            detail="completed_4h_end_ms cannot be later than the latest completed UTC 4H boundary",
+        )
+    return completed_4h_end_ms
+
+
+def _spot_demand_payload(completed_4h_end_ms: int | None = None) -> dict:
+    payload_generated_at_ms = int(time.time() * 1000)
+    if completed_4h_end_ms is None:
+        evaluation_now_ms = payload_generated_at_ms
+        query_mode = "latest"
+        requested_boundary = None
+    else:
+        evaluation_now_ms = _validate_completed_4h_boundary(completed_4h_end_ms)
+        query_mode = "historical_boundary"
+        requested_boundary = completed_4h_end_ms
+
+    payload = build_spot_demand_snapshot(
+        store,
+        collector.snapshot(),
+        coin=HYPE_COIN,
+        now_ms=evaluation_now_ms,
+    )
+    returned_boundary = int(payload["windows"]["4h"]["window_end_ms"])
+    payload.update(
+        {
+            "schema_version": SPOT_PAYLOAD_SCHEMA_VERSION,
+            "collector_interface_version": COLLECTOR_INTERFACE_VERSION,
+            "payload_generated_at_ms": payload_generated_at_ms,
+            "query_mode": query_mode,
+            "requested_completed_4h_end_ms": requested_boundary,
+            "completed_4h_end_ms": returned_boundary,
+            "boundary_match": requested_boundary is None or returned_boundary == requested_boundary,
+            "payload_persistence": "read_only_computed_no_snapshot_storage",
+        }
+    )
+    return payload
+
+
 @app.get("/health")
 def health() -> dict:
     state = collector.snapshot()
     return {
         "status": "ok" if state["connected"] else "degraded",
         "service": "hype-spot-collector",
-        "version": "1.2.1",
-        "protocol_compatibility": "HYPE_SWING_LONG_PROTOCOL_v1.2.1",
+        "version": COLLECTOR_INTERFACE_VERSION,
+        "protocol_compatibility": "HYPE_SWING_LONG_PROTOCOL_v1.2.1+",
+        "spot_payload_schema_version": SPOT_PAYLOAD_SCHEMA_VERSION,
         "time": datetime.now(timezone.utc).isoformat(),
         "storage_backend": STORAGE_BACKEND,
         "collector": state,
@@ -193,8 +245,8 @@ def readiness(response: Response) -> dict:
 
 
 @app.get("/hype/spot-demand")
-def hype_spot_demand() -> dict:
-    return build_spot_demand_snapshot(store, collector.snapshot(), coin=HYPE_COIN)
+def hype_spot_demand(completed_4h_end_ms: int | None = None) -> dict:
+    return _spot_demand_payload(completed_4h_end_ms)
 
 
 @app.get("/storage/status")
