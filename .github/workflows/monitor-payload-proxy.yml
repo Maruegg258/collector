@@ -1,0 +1,104 @@
+name: HYPE Monitor Payload Proxy
+
+on:
+  schedule:
+    - cron: '2,7 */4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proxy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch exact-boundary canonical HYPE payload
+        env:
+          BASE_URL: https://collector-stateless-production.up.railway.app
+        run: |
+          set -euo pipefail
+          BOUNDARY=$(python - <<'PY'
+          import time
+          four_h = 4 * 60 * 60 * 1000
+          now = int(time.time() * 1000)
+          print((now // four_h) * four_h)
+          PY
+          )
+
+          code='000'
+          for i in $(seq 1 10); do
+            code=$(curl -sS -o readiness.json -w '%{http_code}' "$BASE_URL/readiness" || true)
+            if [ "$code" = '200' ]; then
+              break
+            fi
+            sleep 3
+          done
+          test "$code" = '200'
+
+          curl -fsS "$BASE_URL/hype/spot-demand?completed_4h_end_ms=$BOUNDARY" -o payload.json
+
+          BOUNDARY="$BOUNDARY" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          boundary = int(os.environ['BOUNDARY'])
+          p = json.loads(Path('payload.json').read_text())
+          assert p['schema_version'] == 'HYPE-SPOT-PAYLOAD-v1'
+          assert p['source'] == 'hyperliquid_official'
+          assert p['market'] == 'HYPE/USDC'
+          assert p['coin'] == '@107'
+          assert p['requested_completed_4h_end_ms'] == boundary
+          assert p['completed_4h_end_ms'] == boundary
+          assert p['boundary_match'] is True
+          for label in ('4h', '24h', '3d'):
+              assert label in p['windows']
+
+          collector = p.get('collector') or {}
+          review = p.get('monitor_review') or {}
+          fields = (
+              'window_start_ms', 'window_end_ms', 'archive_source', 'history_ready',
+              'coverage_ratio', 'continuity_status', 'unresolved_gap_count',
+              'independent_gap_count', 'unresolved_gap_duration_ms',
+              'max_unresolved_gap_ms', 'decision_usability', 'net_delta_usdc',
+              'delta_ratio', 'base_delta_hype', 'total_notional_usdc', 'gap_diagnostics',
+          )
+          out = {
+              'transport_version': 'HYPE-PAYLOAD-PROXY-v1',
+              'schema_version': p.get('schema_version'),
+              'collector_interface_version': p.get('collector_interface_version'),
+              'protocol_version': p.get('protocol_version'),
+              'source': p.get('source'),
+              'market': p.get('market'),
+              'coin': p.get('coin'),
+              'payload_generated_at_ms': p.get('payload_generated_at_ms'),
+              'query_mode': p.get('query_mode'),
+              'requested_completed_4h_end_ms': p.get('requested_completed_4h_end_ms'),
+              'completed_4h_end_ms': p.get('completed_4h_end_ms'),
+              'boundary_match': p.get('boundary_match'),
+              'data_quality': p.get('data_quality'),
+              'full_spot_mode_ready': p.get('full_spot_mode_ready'),
+              'collector': {k: collector.get(k) for k in (
+                  'connected', 'latest_stored_trade_time_ms', 'last_trade_age_ms',
+                  'unresolved_gaps', 'reconnects', 'recovery_attempts',
+                  'recovery_successes', 'recovery_failures')},
+              'monitor_review': {
+                  'windows_with_unresolved_gaps': review.get('windows_with_unresolved_gaps'),
+                  'repeated_continuity_review_required': review.get('repeated_continuity_review_required'),
+                  'fixed_cliff_thresholds_applied': review.get('fixed_cliff_thresholds_applied'),
+              },
+              'windows': {
+                  label: {k: p['windows'][label].get(k) for k in fields}
+                  for label in ('4h', '24h', '3d')
+              },
+              'recent_4h': [
+                  {k: b.get(k) for k in (
+                      'window_start_ms', 'window_end_ms', 'archive_source', 'history_ready',
+                      'continuity_status', 'net_delta_usdc', 'delta_ratio',
+                      'total_notional_usdc', 'cumulative_delta_usdc')}
+                  for b in p.get('recent_4h', [])
+              ],
+          }
+          print('HYPE_PAYLOAD_PROXY_V1 ' + json.dumps(out, ensure_ascii=False, separators=(',', ':'), sort_keys=True))
+          PY
