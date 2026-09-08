@@ -15,6 +15,7 @@ from .analytics import build_spot_demand_snapshot
 from .collector import HypeSpotCollector
 from .leases import CollectorLeaseCoordinator
 from .lifecycle import StorageLifecycle, StorageLifecycleConfig
+from .monitor_transport import compact_monitor_payload_json
 from .storage_factory import create_store
 
 logging.basicConfig(
@@ -39,7 +40,7 @@ VOLUME_CRITICAL_RATIO = float(os.getenv("VOLUME_CRITICAL_RATIO", "0.95"))
 READINESS_MAX_MESSAGE_AGE_MS = max(10_000, int(os.getenv("READINESS_MAX_MESSAGE_AGE_MS", "30000")))
 FOUR_HOURS_MS = 4 * 60 * 60 * 1000
 SPOT_PAYLOAD_SCHEMA_VERSION = "HYPE-SPOT-PAYLOAD-v1"
-COLLECTOR_INTERFACE_VERSION = "1.2.2"
+COLLECTOR_INTERFACE_VERSION = "1.2.3"
 
 store = create_store(backend=STORAGE_BACKEND, db_path=DB_PATH, database_url=DATABASE_URL)
 
@@ -64,9 +65,11 @@ lifecycle = StorageLifecycle(
 collector_task: asyncio.Task | None = None
 summary_task: asyncio.Task | None = None
 storage_task: asyncio.Task | None = None
+last_monitor_payload_boundary_ms: int | None = None
 
 
 async def periodic_summary() -> None:
+    global last_monitor_payload_boundary_ms
     while True:
         await asyncio.sleep(SUMMARY_INTERVAL_SECONDS)
         state = collector.snapshot()
@@ -92,6 +95,15 @@ async def periodic_summary() -> None:
             storage.get("status", "NOT_RUN"),
             RAW_RETENTION_HOURS,
         )
+
+        completed_boundary_ms = int(windows["4h"]["window_end_ms"])
+        if completed_boundary_ms != last_monitor_payload_boundary_ms:
+            payload = _spot_demand_payload(completed_boundary_ms)
+            logger.info(
+                "monitor_payload reason=completed_boundary payload=%s",
+                compact_monitor_payload_json(payload),
+            )
+            last_monitor_payload_boundary_ms = completed_boundary_ms
 
 
 async def periodic_storage_maintenance() -> None:
@@ -228,7 +240,7 @@ def health() -> dict:
         "status": "ok" if state["connected"] else "degraded",
         "service": "hype-spot-collector",
         "version": COLLECTOR_INTERFACE_VERSION,
-        "protocol_compatibility": "HYPE_SWING_LONG_PROTOCOL_v1.2.1+",
+        "protocol_compatibility": "HYPE_SWING_LONG_PROTOCOL_v1.3.1+",
         "spot_payload_schema_version": SPOT_PAYLOAD_SCHEMA_VERSION,
         "time": datetime.now(timezone.utc).isoformat(),
         "storage_backend": STORAGE_BACKEND,
@@ -246,7 +258,12 @@ def readiness(response: Response) -> dict:
 
 @app.get("/hype/spot-demand")
 def hype_spot_demand(completed_4h_end_ms: int | None = None) -> dict:
-    return _spot_demand_payload(completed_4h_end_ms)
+    payload = _spot_demand_payload(completed_4h_end_ms)
+    logger.info(
+        "monitor_payload reason=api_request payload=%s",
+        compact_monitor_payload_json(payload),
+    )
+    return payload
 
 
 @app.get("/storage/status")
