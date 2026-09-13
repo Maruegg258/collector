@@ -1,0 +1,257 @@
+name: HYPE v0.2A Full History Replay
+
+on:
+  push:
+    paths:
+      - '.github/workflows/backtest-v02a-full-replay.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run price-control and spot-filter replay
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, math, urllib.request
+          from datetime import datetime, timezone
+
+          H=60*60*1000
+          FOUR=4*H
+          START=1787788800000   # 2026-08-27 00:00 UTC
+          END=1789264800000     # 2026-09-13 02:00 UTC exclusive
+          WARM=1787702400000    # 2026-08-26 00:00 UTC
+          PRE4=1787184000000    # 2026-08-20 00:00 UTC
+          FEE=0.0005
+          SLIP=0.0002
+
+          def get_json(url):
+              with urllib.request.urlopen(url, timeout=30) as r:
+                  return json.load(r)
+
+          def klines(interval,start,end,limit=1500):
+              url=(f'https://fapi.binance.com/fapi/v1/klines?symbol=HYPEUSDT&interval={interval}'
+                   f'&startTime={start}&endTime={end-1}&limit={limit}')
+              arr=get_json(url)
+              out=[]
+              for x in arr:
+                  out.append({'t':int(x[0]),'o':float(x[1]),'h':float(x[2]),'l':float(x[3]),'c':float(x[4]),
+                              'v':float(x[5]),'close_t':int(x[6])})
+              return out
+
+          one=klines('1h',WARM,END)
+          four=klines('4h',PRE4,END)
+
+          def ema(vals,span):
+              a=2/(span+1)
+              out=[]; prev=None
+              for x in vals:
+                  prev=x if prev is None else a*x+(1-a)*prev
+                  out.append(prev)
+              return out
+
+          def rma(vals,n):
+              a=1/n
+              out=[]; prev=None
+              for x in vals:
+                  prev=x if prev is None else a*x+(1-a)*prev
+                  out.append(prev)
+              return out
+
+          closes=[b['c'] for b in one]
+          ema20=ema(closes,20)
+          tr=[]
+          for i,b in enumerate(one):
+              pc=one[i-1]['c'] if i else b['c']
+              tr.append(max(b['h']-b['l'],abs(b['h']-pc),abs(b['l']-pc)))
+          atr14=rma(tr,14)
+          gains=[0.0]; losses=[0.0]
+          for i in range(1,len(one)):
+              d=one[i]['c']-one[i-1]['c']
+              gains.append(max(d,0)); losses.append(max(-d,0))
+          ag=rma(gains,14); al=rma(losses,14)
+          rsi=[]
+          for g,l in zip(ag,al):
+              if l==0: rsi.append(100.0 if g>0 else 50.0)
+              else:
+                  rs=g/l; rsi.append(100-100/(1+rs))
+          sma20=[]; bb_sd=[]
+          for i in range(len(one)):
+              if i<19:
+                  sma20.append(None); bb_sd.append(None)
+              else:
+                  w=closes[i-19:i+1]; m=sum(w)/20
+                  sd=(sum((x-m)**2 for x in w)/20)**0.5
+                  sma20.append(m); bb_sd.append(sd)
+
+          fcl=[b['c'] for b in four]
+          e6=ema(fcl,6); e18=ema(fcl,18)
+          ftr=[]; pdm=[]; ndm=[]
+          for i,b in enumerate(four):
+              if i==0:
+                  ftr.append(b['h']-b['l']); pdm.append(0.0); ndm.append(0.0)
+              else:
+                  pc=four[i-1]['c']; up=b['h']-four[i-1]['h']; dn=four[i-1]['l']-b['l']
+                  ftr.append(max(b['h']-b['l'],abs(b['h']-pc),abs(b['l']-pc)))
+                  pdm.append(up if up>dn and up>0 else 0.0)
+                  ndm.append(dn if dn>up and dn>0 else 0.0)
+          fatr=rma(ftr,14); psm=rma(pdm,14); nsm=rma(ndm,14)
+          dx=[]
+          for a,p,n in zip(fatr,psm,nsm):
+              pdi=100*p/a if a else 0; ndi=100*n/a if a else 0
+              den=pdi+ndi
+              dx.append(100*abs(pdi-ndi)/den if den else 0)
+          adx=rma(dx,14)
+          for i,b in enumerate(four):
+              b['ema6']=e6[i]; b['ema18']=e18[i]; b['adx']=adx[i]
+
+          # last completed 4H candle at each completed 1H signal bar close.
+          def regime_for(signal_close):
+              eligible=[b for b in four if b['close_t'] < signal_close+1]  # close_t is boundary-1ms
+              b=eligible[-1]
+              if b['adx']>=20:
+                  return 'uptrend' if b['ema6']>b['ema18'] else 'downtrend', b['adx']
+              return 'range', b['adx']
+
+          signals=[]
+          for i,b in enumerate(one):
+              if b['t']<START or b['t']>=END-H: continue
+              if i<20: continue
+              reg,adx4=regime_for(b['close_t'])
+              prev=one[i-1]
+              # Trend pullback
+              if reg=='uptrend' and prev['c']<=ema20[i-1] and b['c']>ema20[i] and b['c']>b['o']:
+                  signals.append({'i':i,'t':b['t'],'setup':'trend_pullback','side':'long','atr':atr14[i],'rsi':rsi[i],'adx':adx4})
+              if reg=='downtrend' and prev['c']>=ema20[i-1] and b['c']<ema20[i] and b['c']<b['o']:
+                  signals.append({'i':i,'t':b['t'],'setup':'trend_pullback','side':'short','atr':atr14[i],'rsi':rsi[i],'adx':adx4})
+              if sma20[i] is not None:
+                  lo=sma20[i]-2*bb_sd[i]; hi=sma20[i]+2*bb_sd[i]
+                  if reg=='range' and b['l']<=lo and b['c']>lo and rsi[i]<=40 and b['c']>b['o']:
+                      signals.append({'i':i,'t':b['t'],'setup':'range_reversal','side':'long','atr':atr14[i],'rsi':rsi[i],'adx':adx4})
+                  if reg=='range' and b['h']>=hi and b['c']<hi and rsi[i]>=60 and b['c']<b['o']:
+                      signals.append({'i':i,'t':b['t'],'setup':'range_reversal','side':'short','atr':atr14[i],'rsi':rsi[i],'adx':adx4})
+          signals.sort(key=lambda s:s['i'])
+
+          spot_cache={}
+          def spot_for_signal(sig):
+              signal_close=sig['t']+H
+              boundary=(signal_close//FOUR)*FOUR
+              if boundary not in spot_cache:
+                  p=get_json('https://collector-stateless-production.up.railway.app/hype/spot-demand?completed_4h_end_ms='+str(boundary))
+                  w=p['windows']['4h']
+                  spot_cache[boundary]={
+                      'boundary':boundary,'history_ready':bool(w.get('history_ready')),
+                      'archive_source':w.get('archive_source'),'continuity':w.get('continuity_status'),
+                      'net':float(w.get('net_delta_usdc') or 0.0),'ratio':w.get('delta_ratio')
+                  }
+              return spot_cache[boundary]
+
+          def passes_spot(sig):
+              s=spot_for_signal(sig)
+              usable=s['history_ready'] and s['archive_source']!='missing'
+              if not usable: return None,s
+              if sig['side']=='long': return s['net']>=0,s
+              return s['net']<=0,s
+
+          def run(use_spot=False, exclude_unusable=False):
+              trades=[]; busy_until_idx=-1
+              for sig in signals:
+                  if sig['i']<busy_until_idx: continue
+                  spotpass,sp=None,None
+                  if use_spot:
+                      spotpass,sp=passes_spot(sig)
+                      if spotpass is None:
+                          if exclude_unusable: continue
+                          else: spotpass=True
+                      if not spotpass: continue
+                  ei=sig['i']+1
+                  if ei>=len(one): continue
+                  side=sig['side']; setup=sig['setup']; raw_entry=one[ei]['o']
+                  entry=raw_entry*(1+SLIP) if side=='long' else raw_entry*(1-SLIP)
+                  risk=1.25*sig['atr']
+                  rr=2.0 if setup=='trend_pullback' else 1.5
+                  if side=='long': stop=entry-risk; target=entry+rr*risk
+                  else: stop=entry+risk; target=entry-rr*risk
+                  maxh=72 if setup=='trend_pullback' else 48
+                  exit_px=None; reason=None; xi=None
+                  last=min(len(one)-1,ei+maxh-1)
+                  for j in range(ei,last+1):
+                      bar=one[j]
+                      hit_stop = bar['l']<=stop if side=='long' else bar['h']>=stop
+                      hit_target = bar['h']>=target if side=='long' else bar['l']<=target
+                      if hit_stop:
+                          nominal=stop; reason='stop'; xi=j
+                          exit_px=nominal*(1-SLIP) if side=='long' else nominal*(1+SLIP)
+                          break
+                      if hit_target:
+                          nominal=target; reason='target'; xi=j
+                          exit_px=nominal*(1-SLIP) if side=='long' else nominal*(1+SLIP)
+                          break
+                  if exit_px is None:
+                      xi=last; reason='time' if last< len(one)-1 else 'end'
+                      nominal=one[xi]['c']
+                      exit_px=nominal*(1-SLIP) if side=='long' else nominal*(1+SLIP)
+                  if side=='long': gross=(exit_px-entry)/entry
+                  else: gross=(entry-exit_px)/entry
+                  fees=FEE*(entry+exit_px)/entry
+                  netret=gross-fees
+                  netr=netret/(risk/entry)
+                  trades.append({'signal_i':sig['i'],'signal_t':sig['t'],'entry_i':ei,'exit_i':xi,'setup':setup,'side':side,
+                                 'entry':entry,'stop':stop,'target':target,'exit':exit_px,'reason':reason,'netR':netr,
+                                 'hold':xi-ei+1,'spot':sp})
+                  busy_until_idx=xi+1
+              return trades
+
+          control=run(False)
+          matched=run(False)  # same, later filtered to spot-usable trades for matched-control stats
+          spot=run(True,exclude_unusable=True)
+
+          def stats(ts):
+              if not ts: return {'n':0,'win':None,'avgR':None,'sumR':0,'pf':None,'max_loss_streak':0}
+              rs=[t['netR'] for t in ts]; wins=[r for r in rs if r>0]; losses=[r for r in rs if r<=0]
+              st=mx=0
+              for r in rs:
+                  if r<=0: st+=1; mx=max(mx,st)
+                  else: st=0
+              pf=sum(wins)/abs(sum(losses)) if losses and sum(losses)!=0 else None
+              return {'n':len(ts),'win':len(wins)/len(ts),'avgR':sum(rs)/len(rs),'sumR':sum(rs),'pf':pf,'max_loss_streak':mx}
+
+          # Matched control: exclude any control trade whose signal-time spot bucket is unavailable.
+          matched_control=[]
+          for t in control:
+              sig=next(s for s in signals if s['i']==t['signal_i'] and s['setup']==t['setup'] and s['side']==t['side'])
+              p,spx=passes_spot(sig)
+              if p is not None: matched_control.append(t)
+
+          counts={}
+          for s in signals: counts[(s['setup'],s['side'])]=counts.get((s['setup'],s['side']),0)+1
+          print('REPLAY_SIGNAL_COUNTS '+json.dumps({f'{k[0]}_{k[1]}':v for k,v in counts.items()},sort_keys=True))
+          print('REPLAY_CONTROL '+json.dumps(stats(control),sort_keys=True))
+          print('REPLAY_MATCHED_CONTROL '+json.dumps(stats(matched_control),sort_keys=True))
+          print('REPLAY_V02A '+json.dumps(stats(spot),sort_keys=True))
+
+          def iso(t): return datetime.fromtimestamp(t/1000,tz=timezone.utc).isoformat().replace('+00:00','Z')
+          for n,sig in enumerate(signals,1):
+              p,sp=passes_spot(sig)
+              print('REPLAY_SIGNAL '+json.dumps({
+                  'n':n,'signal_utc':iso(sig['t']),'setup':sig['setup'],'side':sig['side'],
+                  'spot_boundary_utc':iso(sp['boundary']),'spot_history_ready':sp['history_ready'],
+                  'spot_archive_source':sp['archive_source'],'spot_continuity':sp['continuity'],
+                  'spot_net_delta_usdc':sp['net'],'spot_delta_ratio':sp['ratio'],'spot_pass':p
+              },sort_keys=True))
+          for label,ts in [('CONTROL',control),('V02A',spot)]:
+              for n,t in enumerate(ts,1):
+                  print('REPLAY_TRADE '+json.dumps({
+                      'run':label,'n':n,'signal_utc':iso(t['signal_t']),'setup':t['setup'],'side':t['side'],
+                      'entry_utc':iso(one[t['entry_i']]['t']),'exit_utc':iso(one[t['exit_i']]['t']),
+                      'entry':t['entry'],'stop':t['stop'],'target':t['target'],'exit':t['exit'],
+                      'reason':t['reason'],'netR':t['netR'],'hold_hours':t['hold'],
+                      'spot_boundary_utc': iso(t['spot']['boundary']) if t['spot'] else None,
+                      'spot_net_delta_usdc': t['spot']['net'] if t['spot'] else None,
+                      'spot_delta_ratio': t['spot']['ratio'] if t['spot'] else None
+                  },sort_keys=True))
+          PY
