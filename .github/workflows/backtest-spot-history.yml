@@ -1,0 +1,62 @@
+name: HYPE Spot Backtest History Export
+
+on:
+  push:
+    paths:
+      - '.github/workflows/backtest-spot-history.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Export durable 4H spot archive for backtest window
+        env:
+          BASE_URL: https://collector-stateless-production.up.railway.app
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, subprocess
+
+          # Six overlapping 3-day snapshots cover 2026-08-26 04:00 UTC through 2026-09-13 04:00 UTC.
+          boundaries = [
+              1787976000000,  # 2026-08-29 04:00 UTC
+              1788235200000,  # 2026-09-01 04:00 UTC
+              1788494400000,  # 2026-09-04 04:00 UTC
+              1788753600000,  # 2026-09-07 04:00 UTC
+              1789012800000,  # 2026-09-10 04:00 UTC
+              1789272000000,  # 2026-09-13 04:00 UTC
+          ]
+          base = 'https://collector-stateless-production.up.railway.app'
+          buckets = {}
+          for boundary in boundaries:
+              raw = subprocess.check_output([
+                  'curl','-fsS',f'{base}/hype/spot-demand?completed_4h_end_ms={boundary}'
+              ])
+              p = json.loads(raw)
+              assert p['schema_version'] == 'HYPE-SPOT-PAYLOAD-v1'
+              assert p['source'] == 'hyperliquid_official'
+              assert p['coin'] == '@107'
+              assert p['requested_completed_4h_end_ms'] == boundary
+              assert p['completed_4h_end_ms'] == boundary
+              assert p['boundary_match'] is True
+              for b in p.get('recent_4h', []):
+                  end = int(b['window_end_ms'])
+                  buckets[end] = {
+                      'window_start_ms': b.get('window_start_ms'),
+                      'window_end_ms': end,
+                      'archive_source': b.get('archive_source'),
+                      'history_ready': b.get('history_ready'),
+                      'continuity_status': b.get('continuity_status'),
+                      'net_delta_usdc': b.get('net_delta_usdc'),
+                      'delta_ratio': b.get('delta_ratio'),
+                      'total_notional_usdc': b.get('total_notional_usdc'),
+                  }
+
+          for end in sorted(buckets):
+              print('SPOT_BACKFILL_BUCKET ' + json.dumps(buckets[end], separators=(',', ':'), sort_keys=True))
+          print(f'SPOT_BACKFILL_SUMMARY count={len(buckets)} first_end={min(buckets)} last_end={max(buckets)}')
+          PY
