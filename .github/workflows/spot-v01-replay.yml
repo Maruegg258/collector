@@ -4,6 +4,7 @@ on:
     branches: [audit/spot-v01-replay-20260915]
     paths:
       - 'audit/spot_v01_replay.py'
+      - 'audit/spot_v01_canonical_to_csv.py'
       - '.github/workflows/spot-v01-replay.yml'
   workflow_dispatch:
 permissions:
@@ -24,11 +25,13 @@ jobs:
         run: |
           set -o pipefail
           python audit/spot_v01_replay.py | tee spot-replay.log
+      - name: Materialize canonical calibration CSV
+        run: python audit/spot_v01_canonical_to_csv.py
       - name: Persist audit evidence on isolated branch
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add audit/spot_v01_result.json audit/spot_v01_result.pretty.json audit/spot_v01_canonical_current.json
+          git add audit/spot_v01_result.json audit/spot_v01_result.pretty.json audit/spot_v01_canonical_current.json audit/spot_v01_canonical_current.csv
           if ! git diff --cached --quiet; then
             git commit -m 'Materialize ETH Spot v0.1 replay evidence'
             git push origin HEAD:audit/spot-v01-replay-20260915
