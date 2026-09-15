@@ -1,0 +1,225 @@
+{
+  "spot_config": "ETH-SPOT-CLASS-v0.1-PROVISIONAL",
+  "regime_config": "ETH-SPOT-REGIME-v0.1-PROVISIONAL",
+  "structure_spec": "ETH-STRUCT-v0.2-PROVISIONAL",
+  "source": {
+    "spot": "Binance official Spot Public Data Archive / checksum verified",
+    "regime": "Binance official USD-M Perpetual ETHUSDT + BTCUSDT 1D Public Data Archive / checksum verified"
+  },
+  "data": {
+    "spot_4h_bars": 2460,
+    "spot_1h_bars": 9840,
+    "eth_1d_bars": 2448,
+    "btc_1d_bars": 2448,
+    "spot_4h_meta": {
+      "archives": 27,
+      "checksummed": 27,
+      "missing": []
+    },
+    "spot_1h_meta": {
+      "archives": 27,
+      "checksummed": 27,
+      "missing": []
+    },
+    "eth_1d_meta": {
+      "archives": 93,
+      "checksummed": 93,
+      "prelisting_missing": 2,
+      "postlisting_missing": [
+        "https://data.binance.vision/data/futures/um/daily/klines/ETHUSDT/1d/ETHUSDT-1d-2026-09-14.zip"
+      ]
+    },
+    "btc_1d_meta": {
+      "archives": 93,
+      "checksummed": 93,
+      "prelisting_missing": 4,
+      "postlisting_missing": [
+        "https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1d/BTCUSDT-1d-2026-09-14.zip"
+      ]
+    },
+    "eth_1d_gaps": [],
+    "btc_1d_gaps": [],
+    "eval_start": 1757894399999,
+    "latest_spot_close": 1789430399999
+  },
+  "validation": {
+    "regime_deterministic": true,
+    "regime_hash": "1f6853c00ef1a053c902fb1eb4c7639499f17b2a2331d63e6195f7a5a150f0e6",
+    "lookahead_violations": 0,
+    "binding_rule": "episode start 4H boundary -> latest completed 1D close_time <= start",
+    "formal_spot_episode_count": 267
+  },
+  "regime_1d_boundary_counts": {
+    "TRANSITION_UNCLASSIFIED": 149,
+    "UPTREND": 106,
+    "RANGE_CHOP": 29,
+    "DOWNTREND_RISK_OFF": 81
+  },
+  "formal_overall_spot_regime_split": {
+    "UPTREND": {
+      "POSITIVE": {
+        "count": 33,
+        "3d": {
+          "n": 32,
+          "median_return_pct": 1.1726162349054214,
+          "median_mfe_pct": 4.306794450035023,
+          "median_mae_pct": -1.648841422214653
+        },
+        "7d": {
+          "n": 32,
+          "median_return_pct": 0.1897938649974784,
+          "median_mfe_pct": 6.66510274039851,
+          "median_mae_pct": -3.3989704512417673
+        }
+      },
+      "NEGATIVE": {
+        "count": 50,
+        "3d": {
+          "n": 50,
+          "median_return_pct": 0.7629220833155759,
+          "median_mfe_pct": 3.9191898551571014,
+          "median_mae_pct": -1.977424598261851
+        },
+        "7d": {
+          "n": 50,
+          "median_return_pct": 0.6434522475156967,
+          "median_mfe_pct": 5.42244719980749,
+          "median_mae_pct": -3.2590495783080042
+        }
+      },
+      "formal_status": "MIXED / INCONCLUSIVE",
+      "comparisons": {
+        "return_3d_positive_gt_negative": true,
+        "return_7d_positive_gt_negative": false,
+        "excursion_better_count": 3,
+        "excursion_details": [
+          true,
+          true,
+          true,
+          false
+        ]
+      }
+    },
+    "DOWNTREND_RISK_OFF": {
+      "POSITIVE": {
+        "count": 27,
+        "3d": {
+          "n": 27,
+          "median_return_pct": -1.7260216162989672,
+          "median_mfe_pct": 1.8188761041571855,
+          "median_mae_pct": -5.701198622100834
+        },
+        "7d": {
+          "n": 27,
+          "median_return_pct": -1.2691991375669565,
+          "median_mfe_pct": 3.6605504887164964,
+          "median_mae_pct": -7.173488709434029
+        }
+      },
+      "NEGATIVE": {
+        "count": 35,
+        "3d": {
+          "n": 35,
+          "median_return_pct": 0.2677177446187784,
+          "median_mfe_pct": 3.494866780738204,
+          "median_mae_pct": -3.4362960459614733
+        },
+        "7d": {
+          "n": 35,
+          "median_return_pct": 1.0410212584125667,
+          "median_mfe_pct": 5.982480442080451,
+          "median_mae_pct": -4.184717981200736
+        }
+      },
+      "formal_status": "INSUFFICIENT REGIME SAMPLE",
+      "comparisons": null
+    },
+    "RANGE_CHOP": {
+      "POSITIVE": {
+        "count": 7,
+        "3d": {
+          "n": 7,
+          "median_return_pct": -5.570300142647822,
+          "median_mfe_pct": 2.318269594666722,
+          "median_mae_pct": -10.057766681353108
+        },
+        "7d": {
+          "n": 7,
+          "median_return_pct": -5.446483563132931,
+          "median_mfe_pct": 3.2359132520683564,
+          "median_mae_pct": -10.057766681353108
+        }
+      },
+      "NEGATIVE": {
+        "count": 12,
+        "3d": {
+          "n": 12,
+          "median_return_pct": -2.8003834424587817,
+          "median_mfe_pct": 1.4614606531589414,
+          "median_mae_pct": -6.344998523379363
+        },
+        "7d": {
+          "n": 12,
+          "median_return_pct": -4.3536288702088815,
+          "median_mfe_pct": 2.855863836110506,
+          "median_mae_pct": -11.055652114730037
+        }
+      },
+      "formal_status": "INSUFFICIENT REGIME SAMPLE",
+      "comparisons": null
+    },
+    "TRANSITION_UNCLASSIFIED": {
+      "POSITIVE": {
+        "count": 40,
+        "3d": {
+          "n": 39,
+          "median_return_pct": -1.120293847566567,
+          "median_mfe_pct": 2.943055653122184,
+          "median_mae_pct": -3.691947803804463
+        },
+        "7d": {
+          "n": 39,
+          "median_return_pct": -0.40628849406016965,
+          "median_mfe_pct": 4.608173606045818,
+          "median_mae_pct": -6.547696888611698
+        }
+      },
+      "NEGATIVE": {
+        "count": 63,
+        "3d": {
+          "n": 61,
+          "median_return_pct": -0.7021503087076719,
+          "median_mfe_pct": 2.3794221905345303,
+          "median_mae_pct": -3.5294869065360834
+        },
+        "7d": {
+          "n": 58,
+          "median_return_pct": -1.079114798722941,
+          "median_mfe_pct": 3.739769130808146,
+          "median_mae_pct": -5.171187785290609
+        }
+      },
+      "formal_status": "MIXED / INCONCLUSIVE",
+      "comparisons": {
+        "return_3d_positive_gt_negative": false,
+        "return_7d_positive_gt_negative": true,
+        "excursion_better_count": 2,
+        "excursion_details": [
+          true,
+          false,
+          true,
+          false
+        ]
+      }
+    }
+  },
+  "core_regime_sample_sufficient_count": 1,
+  "core_regime_pass_count": 0,
+  "regime_directional_discrimination_gate": "HOLD PROVISIONAL",
+  "promotion_effect": "No automatic Spot promotion; Integrated Utility Test remains pending Structure v0.2 shadow/cutover review.",
+  "notes": [
+    "Regime classifier frozen in Protocol v1.2.5 before replay.",
+    "TRANSITION_UNCLASSIFIED excluded from 2-of-3 core regime gate.",
+    "No q35, Spot aggregation, Structure threshold, EMA threshold, or classifier tuning performed after outcomes."
+  ]
+}
