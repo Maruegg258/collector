@@ -4,13 +4,13 @@
   "structure_spec": "ETH-STRUCT-v0.2-PROVISIONAL",
   "source": {
     "spot": "Binance official Spot Public Data Archive / checksum verified",
-    "regime": "Binance official USD-M Perpetual ETHUSDT + BTCUSDT 1D Public Data Archive / checksum verified"
+    "regime": "Binance official USD-M Perpetual ETHUSDT + BTCUSDT 1D Public Data Archive / checksum verified; latest missing archive bar supplemented by Binance plugin direct completed kline"
   },
   "data": {
     "spot_4h_bars": 2460,
     "spot_1h_bars": 9840,
-    "eth_1d_bars": 2448,
-    "btc_1d_bars": 2448,
+    "eth_1d_bars": 2449,
+    "btc_1d_bars": 2449,
     "spot_4h_meta": {
       "archives": 27,
       "checksummed": 27,
@@ -27,7 +27,12 @@
       "prelisting_missing": 2,
       "postlisting_missing": [
         "https://data.binance.vision/data/futures/um/daily/klines/ETHUSDT/1d/ETHUSDT-1d-2026-09-14.zip"
-      ]
+      ],
+      "plugin_direct_supplement": {
+        "open_time": 1789344000000,
+        "close_time": 1789430399999,
+        "source": "Binance plugin direct USD-M futures kline"
+      }
     },
     "btc_1d_meta": {
       "archives": 93,
@@ -35,7 +40,12 @@
       "prelisting_missing": 4,
       "postlisting_missing": [
         "https://data.binance.vision/data/futures/um/daily/klines/BTCUSDT/1d/BTCUSDT-1d-2026-09-14.zip"
-      ]
+      ],
+      "plugin_direct_supplement": {
+        "open_time": 1789344000000,
+        "close_time": 1789430399999,
+        "source": "Binance plugin direct USD-M futures kline"
+      }
     },
     "eth_1d_gaps": [],
     "btc_1d_gaps": [],
@@ -44,14 +54,14 @@
   },
   "validation": {
     "regime_deterministic": true,
-    "regime_hash": "1f6853c00ef1a053c902fb1eb4c7639499f17b2a2331d63e6195f7a5a150f0e6",
+    "regime_hash": "d042c1e25b1f9714e5da0b8e990732ba86a26238da7ba58e49791623a9ce6530",
     "lookahead_violations": 0,
     "binding_rule": "episode start 4H boundary -> latest completed 1D close_time <= start",
     "formal_spot_episode_count": 267
   },
   "regime_1d_boundary_counts": {
     "TRANSITION_UNCLASSIFIED": 149,
-    "UPTREND": 106,
+    "UPTREND": 107,
     "RANGE_CHOP": 29,
     "DOWNTREND_RISK_OFF": 81
   },
