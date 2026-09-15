@@ -1,0 +1,35 @@
+name: ETH Spot Regime v0.1 Replay Audit
+on:
+  push:
+    branches: [audit/spot-v01-replay-20260915]
+    paths:
+      - 'audit/spot_regime_v01_replay.py'
+      - '.github/workflows/spot-regime-v01-replay.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout audit branch
+        uses: actions/checkout@v4
+        with:
+          ref: audit/spot-v01-replay-20260915
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Run precommitted Spot regime replay
+        run: |
+          set -o pipefail
+          python audit/spot_regime_v01_replay.py | tee spot-regime-replay.log
+      - name: Persist regime audit evidence
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add audit/spot_regime_v01_result.json audit/spot_regime_v01_result.pretty.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Materialize ETH Spot regime replay evidence'
+            git push origin HEAD:audit/spot-v01-replay-20260915
+          fi
