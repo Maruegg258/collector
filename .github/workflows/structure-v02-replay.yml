@@ -1,0 +1,44 @@
+name: ETH Structure v0.2 Replay Audit
+
+on:
+  push:
+    branches:
+      - audit/structure-v02-replay-20260915
+    paths:
+      - audit/structure_v02_replay.py
+      - .github/workflows/structure-v02-replay.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout audit branch
+        uses: actions/checkout@v4
+        with:
+          ref: audit/structure-v02-replay-20260915
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Run canonical replay
+        run: |
+          set -o pipefail
+          python audit/structure_v02_replay.py | tee replay.log
+      - name: Materialize audit result
+        run: |
+          grep '^STRUCT_REPLAY_JSON=' replay.log | tail -1 | sed 's/^STRUCT_REPLAY_JSON=//' > audit/structure_v02_result.json
+          python -m json.tool audit/structure_v02_result.json > audit/structure_v02_result.pretty.json
+      - name: Persist audit evidence on isolated branch
+        run: |
+          git config user.name 'structure-replay-audit'
+          git config user.email 'actions@users.noreply.github.com'
+          git add audit/structure_v02_result.json audit/structure_v02_result.pretty.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Persist ETH Structure v0.2 replay audit result'
+            git push origin HEAD:audit/structure-v02-replay-20260915
+          fi
