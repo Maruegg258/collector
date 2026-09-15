@@ -1,0 +1,331 @@
+{
+  "engine": "ETH-SPOT-CLASS-v0.1-PROVISIONAL",
+  "source": "Binance official Spot Public Data Archive, checksum-verified",
+  "data": {
+    "4h_bars": 2460,
+    "1h_bars": 9840,
+    "4h_source": {
+      "archives": 27,
+      "checksummed": 27,
+      "missing": []
+    },
+    "1h_source": {
+      "archives": 27,
+      "checksummed": 27,
+      "missing": []
+    },
+    "4h_gaps": [],
+    "1h_gaps": [],
+    "latest_close_time": 1789430399999
+  },
+  "validation": {
+    "deterministic": true,
+    "hash": "105e466f2d699960f0772f42fa4a63ae3429e0872a34faa4e2e2e7ed3b2ca92b",
+    "eligible_365d_boundaries": 2191,
+    "coverage_expected_4h": 2190,
+    "coverage_ratio": 1.0004566210045662,
+    "lookahead_design": "point-in-time only; q35 uses current/prior completed same-window observations only"
+  },
+  "latest": {
+    "close_time": 1789430399999,
+    "close": 2515.75,
+    "d4": 2550078.9403069913,
+    "r4": 0.011204005903922782,
+    "d24": 27755975.452911988,
+    "r24": 0.03088695418782287,
+    "d3": -35576024.40852697,
+    "r3": -0.019305354958563222,
+    "quote4": 227604212.473161,
+    "tbq4": 115077145.706734,
+    "q4": 0.04082324957428456,
+    "q24": 0.029609818653432842,
+    "q3": 0.021844627942532283,
+    "c4": "MARGINAL / NEUTRAL",
+    "c24": "CLEAR POSITIVE",
+    "c3": "MARGINAL / NEUTRAL",
+    "overall": "POSITIVE"
+  },
+  "repair_anchors": {
+    "1787975999999": {
+      "completed_4h_time_utc": "2026-08-29T03:59:59.999Z",
+      "close_time_ms": 1787975999999,
+      "delta_4h_usdt": 170657.91333200037,
+      "ratio_4h": 0.004133476500181961,
+      "delta_24h_usdt": -59534513.66226501,
+      "ratio_24h": -0.07166485702108803,
+      "delta_3d_usdt": -78388760.10260391,
+      "ratio_3d": -0.0335135356756313,
+      "abs_ratio_4h": 0.004133476500181961,
+      "abs_ratio_24h": 0.07166485702108803,
+      "abs_ratio_3d": 0.0335135356756313,
+      "q35_4h": 0.04656301798316686,
+      "q35_24h": 0.025980153939117085,
+      "q35_3d": 0.01980380869315591,
+      "class_4h": "MARGINAL / NEUTRAL",
+      "class_24h": "CLEAR NEGATIVE",
+      "class_3d": "CLEAR NEGATIVE",
+      "overall": "NEGATIVE",
+      "quote_volume_4h": 41286774.782556,
+      "taker_buy_quote_volume_4h": 20728716.347944
+    },
+    "1788868799999": {
+      "completed_4h_time_utc": "2026-09-08T11:59:59.999Z",
+      "close_time_ms": 1788868799999,
+      "delta_4h_usdt": -1995071.4965050071,
+      "ratio_4h": -0.02102692537613225,
+      "delta_24h_usdt": -26942200.314202003,
+      "ratio_24h": -0.04639927237869278,
+      "delta_3d_usdt": -62279047.124852,
+      "ratio_3d": -0.03736214350286695,
+      "abs_ratio_4h": 0.02102692537613225,
+      "abs_ratio_24h": 0.04639927237869278,
+      "abs_ratio_3d": 0.03736214350286695,
+      "q35_4h": 0.04139764430396229,
+      "q35_24h": 0.028718828579901455,
+      "q35_3d": 0.024919227221113623,
+      "class_4h": "MARGINAL / NEUTRAL",
+      "class_24h": "CLEAR NEGATIVE",
+      "class_3d": "CLEAR NEGATIVE",
+      "overall": "NEGATIVE",
+      "quote_volume_4h": 94881750.936807,
+      "taker_buy_quote_volume_4h": 46443339.720151
+    }
+  },
+  "q35_episode_summary": {
+    "c4": {
+      "CLEAR NEGATIVE": {
+        "count": 455,
+        "24h": {
+          "n": 454,
+          "median_return_pct": -0.1713495064262438,
+          "median_mfe_pct": 1.5176470703326728,
+          "median_mae_pct": -1.8065475027401856
+        },
+        "3d": {
+          "n": 452,
+          "median_return_pct": -0.2694957145996213,
+          "median_mfe_pct": 3.0200514770328812,
+          "median_mae_pct": -3.2995823753908526
+        },
+        "7d": {
+          "n": 447,
+          "median_return_pct": -0.3091235999538089,
+          "median_mfe_pct": 4.555998505556946,
+          "median_mae_pct": -4.866180048661805
+        }
+      },
+      "CLEAR POSITIVE": {
+        "count": 402,
+        "24h": {
+          "n": 400,
+          "median_return_pct": 0.06958892005481943,
+          "median_mfe_pct": 1.6250463377501911,
+          "median_mae_pct": -1.7722881280390235
+        },
+        "3d": {
+          "n": 399,
+          "median_return_pct": -0.271848196729052,
+          "median_mfe_pct": 3.0030536231790084,
+          "median_mae_pct": -3.1207560114849264
+        },
+        "7d": {
+          "n": 395,
+          "median_return_pct": -0.5216383307573458,
+          "median_mfe_pct": 4.548272280540422,
+          "median_mae_pct": -4.578434726248137
+        }
+      }
+    },
+    "c24": {
+      "CLEAR NEGATIVE": {
+        "count": 164,
+        "24h": {
+          "n": 164,
+          "median_return_pct": -0.3298492857808255,
+          "median_mfe_pct": 1.6736972010296447,
+          "median_mae_pct": -1.9396839523946052
+        },
+        "3d": {
+          "n": 162,
+          "median_return_pct": -0.37684143316393803,
+          "median_mfe_pct": 2.7039561896109454,
+          "median_mae_pct": -3.4828914762487786
+        },
+        "7d": {
+          "n": 159,
+          "median_return_pct": -0.6673919049592469,
+          "median_mfe_pct": 4.394397050219734,
+          "median_mae_pct": -4.9018183655552665
+        }
+      },
+      "CLEAR POSITIVE": {
+        "count": 127,
+        "24h": {
+          "n": 126,
+          "median_return_pct": -0.09244606395028554,
+          "median_mfe_pct": 1.5656583556594716,
+          "median_mae_pct": -1.7493377599318904
+        },
+        "3d": {
+          "n": 125,
+          "median_return_pct": -0.3062919637294881,
+          "median_mfe_pct": 3.1456623549947604,
+          "median_mae_pct": -3.497119303011864
+        },
+        "7d": {
+          "n": 125,
+          "median_return_pct": -0.3516890777499615,
+          "median_mfe_pct": 4.650148408991761,
+          "median_mae_pct": -5.449281567452124
+        }
+      }
+    },
+    "c3": {
+      "CLEAR NEGATIVE": {
+        "count": 90,
+        "24h": {
+          "n": 89,
+          "median_return_pct": -0.23631334393873216,
+          "median_mfe_pct": 1.4007933610766132,
+          "median_mae_pct": -1.9043348986478525
+        },
+        "3d": {
+          "n": 88,
+          "median_return_pct": 0.3069669098257233,
+          "median_mfe_pct": 3.0177382988571755,
+          "median_mae_pct": -3.1763937304656653
+        },
+        "7d": {
+          "n": 87,
+          "median_return_pct": 1.0592150624616492,
+          "median_mfe_pct": 6.089526340048268,
+          "median_mae_pct": -3.7795481365635375
+        }
+      },
+      "CLEAR POSITIVE": {
+        "count": 55,
+        "24h": {
+          "n": 55,
+          "median_return_pct": 0.11323246179686386,
+          "median_mfe_pct": 1.8178319641244167,
+          "median_mae_pct": -2.1370063383715276
+        },
+        "3d": {
+          "n": 55,
+          "median_return_pct": -0.3218421956897366,
+          "median_mfe_pct": 3.308922548126869,
+          "median_mae_pct": -3.6883797698229137
+        },
+        "7d": {
+          "n": 55,
+          "median_return_pct": -1.633766448086904,
+          "median_mfe_pct": 4.569115667801427,
+          "median_mae_pct": -5.937677623170378
+        }
+      }
+    },
+    "overall": {
+      "NEGATIVE": {
+        "count": 160,
+        "24h": {
+          "n": 160,
+          "median_return_pct": -0.10797639781147117,
+          "median_mfe_pct": 1.6736972010296447,
+          "median_mae_pct": -1.9534525197729746
+        },
+        "3d": {
+          "n": 158,
+          "median_return_pct": -0.3152212277180211,
+          "median_mfe_pct": 2.7039561896109454,
+          "median_mae_pct": -3.2878745471579816
+        },
+        "7d": {
+          "n": 155,
+          "median_return_pct": -0.6673919049592469,
+          "median_mfe_pct": 4.435366836871801,
+          "median_mae_pct": -4.8699169682776215
+        }
+      },
+      "POSITIVE": {
+        "count": 107,
+        "24h": {
+          "n": 106,
+          "median_return_pct": -0.2876701127677683,
+          "median_mfe_pct": 1.6016960713627126,
+          "median_mae_pct": -1.7941882538869858
+        },
+        "3d": {
+          "n": 105,
+          "median_return_pct": -0.7429204328931349,
+          "median_mfe_pct": 2.690364063394024,
+          "median_mae_pct": -3.7919619945243066
+        },
+        "7d": {
+          "n": 105,
+          "median_return_pct": -0.40628849406016965,
+          "median_mfe_pct": 4.572106621911254,
+          "median_mae_pct": -5.485485979233962
+        }
+      }
+    }
+  },
+  "q35_episode_counts": {
+    "c4": {
+      "CLEAR POSITIVE": 402,
+      "CLEAR NEGATIVE": 455
+    },
+    "c24": {
+      "CLEAR NEGATIVE": 164,
+      "CLEAR POSITIVE": 127
+    },
+    "c3": {
+      "CLEAR NEGATIVE": 90,
+      "CLEAR POSITIVE": 55
+    },
+    "overall": {
+      "NEGATIVE": 160,
+      "POSITIVE": 107
+    }
+  },
+  "q25_episode_counts_diagnostic_only": {
+    "c4": {
+      "CLEAR NEGATIVE": 454,
+      "CLEAR POSITIVE": 433
+    },
+    "c24": {
+      "CLEAR NEGATIVE": 169,
+      "CLEAR POSITIVE": 146
+    },
+    "c3": {
+      "CLEAR NEGATIVE": 94,
+      "CLEAR POSITIVE": 60
+    },
+    "overall": {
+      "NEGATIVE": 163,
+      "POSITIVE": 104
+    }
+  },
+  "q40_episode_counts_diagnostic_only": {
+    "c4": {
+      "CLEAR NEGATIVE": 447,
+      "CLEAR POSITIVE": 377
+    },
+    "c24": {
+      "CLEAR NEGATIVE": 160,
+      "CLEAR POSITIVE": 116
+    },
+    "c3": {
+      "CLEAR NEGATIVE": 95,
+      "CLEAR POSITIVE": 52
+    },
+    "overall": {
+      "NEGATIVE": 156,
+      "POSITIVE": 102
+    }
+  },
+  "promotion_status_pre_integrated_utility": "PENDING REVIEW",
+  "notes": [
+    "Integrated Utility Test intentionally deferred until Structure v0.2 forward-parity/cutover review.",
+    "No q35 parameter modification is performed by this replay."
+  ]
+}
