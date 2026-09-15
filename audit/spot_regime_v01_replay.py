@@ -11,6 +11,12 @@ STRUCT_CFG = 'ETH-STRUCT-v0.2-PROVISIONAL'
 SPOT_BASE = 'https://data.binance.vision/data/spot'
 FUT_BASE = 'https://data.binance.vision/data/futures/um'
 
+# Binance plugin direct completed-1D supplements used only when Public Data Archive daily ZIP is not yet materialized.
+PLUGIN_1D_SUPPLEMENT = {
+    'ETHUSDT': {'open_time':1789344000000,'close_time':1789430399999,'open':2475.49,'high':2614.99,'low':2461.10,'close':2513.93},
+    'BTCUSDT': {'open_time':1789344000000,'close_time':1789430399999,'open':76805.00,'high':79570.90,'low':76350.10,'close':78153.30},
+}
+
 def norm_ts(v):
     x=int(v)
     return x//1000 if x > 10**15 else x
@@ -120,6 +126,10 @@ def load_futures_all_1d(symbol, start_year, start_month):
             out[ot]={'open_time':ot,'close_time':ct,'open':float(r[1]),'high':float(r[2]),'low':float(r[3]),'close':float(r[4])}
         except Exception:
             continue
+    sup=PLUGIN_1D_SUPPLEMENT.get(symbol)
+    if sup and sup['close_time'] < NOW_MS and sup['open_time'] not in out:
+        out[sup['open_time']]=dict(sup)
+        meta['plugin_direct_supplement']={'open_time':sup['open_time'],'close_time':sup['close_time'],'source':'Binance plugin direct USD-M futures kline'}
     bs=[out[k] for k in sorted(out)]
     if not bs: raise RuntimeError('No futures data '+symbol)
     return bs, meta
@@ -394,7 +404,7 @@ for x in reg:
 out={
  'spot_config':SPOT_CFG,'regime_config':REGIME_CFG,'structure_spec':STRUCT_CFG,
  'source':{'spot':'Binance official Spot Public Data Archive / checksum verified',
-           'regime':'Binance official USD-M Perpetual ETHUSDT + BTCUSDT 1D Public Data Archive / checksum verified'},
+           'regime':'Binance official USD-M Perpetual ETHUSDT + BTCUSDT 1D Public Data Archive / checksum verified; latest missing archive bar supplemented by Binance plugin direct completed kline'},
  'data':{'spot_4h_bars':len(b4),'spot_1h_bars':len(b1),'eth_1d_bars':len(eth1),'btc_1d_bars':len(btc1),
          'spot_4h_meta':m4,'spot_1h_meta':m1,'eth_1d_meta':me,'btc_1d_meta':mb,
          'eth_1d_gaps':eth_gaps,'btc_1d_gaps':btc_gaps,'eval_start':eval_start,'latest_spot_close':latest_ct},
